@@ -7,6 +7,9 @@ services:
       dockerfile: Dockerfile
       platforms:
         - linux/amd64
+
+    user: "${UID}:${GID}" # Build as current user to avoid permission issues
+
     container_name: btgencobot
     hostname: btgencobot
     ports:
@@ -16,6 +19,8 @@ services:
     volumes:
       # Mount only necessary directories instead of entire project
       - ./src:/workspace/src:cached
+      # Use read-only mounts for large model directories to improve performance and prevent accidental modifications
+      - /home/alberto/Desktop/AIRLab-POLIMI_llama-3.2-1b-it-ft-lora-bt:/workspace/models/AIRLab-POLIMI_llama-3.2-1b-it-ft-lora-bt:ro
       - ./robot_description:/workspace/robot_description:cached
       - ./worlds:/workspace/worlds:cached
       - ./models:/workspace/models:cached # Mount models as volume instead of copying
