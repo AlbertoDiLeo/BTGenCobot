@@ -10,6 +10,9 @@ services:
 
     user: "${UID}:${GID}" # Build as current user to avoid permission issues
 
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
     container_name: btgencobot
     hostname: btgencobot
     ports:
