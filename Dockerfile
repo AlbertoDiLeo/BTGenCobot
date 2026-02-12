@@ -52,7 +52,7 @@ RUN apt-get update && apt-get install -y \
 # Install Python packages for vision (Florence-2)
 # Using PyTorch for best text-prompted detection support
 RUN pip3 install --break-system-packages \
-  torch torchvision --index-url https://download.pytorch.org/whl/cu121 && \
+  torch torchvision --index-url https://download.pytorch.org/whl/cpu && \
   pip3 install --break-system-packages \
   'numpy<2.0' \
   pillow \
