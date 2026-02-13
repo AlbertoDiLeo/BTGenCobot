@@ -8,7 +8,7 @@ services:
       platforms:
         - linux/amd64
 
-    user: "${UID}:${GID}" # Build as current user to avoid permission issues
+    #user: "${UID}:${GID}" # Build as current user to avoid permission issues
 
     extra_hosts:
       - "host.docker.internal:host-gateway"

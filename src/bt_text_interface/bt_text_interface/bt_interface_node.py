@@ -73,7 +73,7 @@ class BTInterfaceNode(Node):
         self._bt_xml_publisher = self.create_publisher(String, '/generated_behavior_tree', qos_latched)
 
         # Republish last BT every 2 seconds for visibility
-        self.bt_republish_timer = self.create_timer(2.0, self._republish_last_bt)
+        self.bt_republish_timer = self.create_timer(60.0, self._republish_last_bt)
 
         self._action_server = ActionServer(
             self, GenerateAndExecuteBT, '/generate_and_execute_bt',
@@ -209,7 +209,7 @@ class BTInterfaceNode(Node):
                     'max_tokens': 1024,
                     'temperature': 0.1,
                     'prompt_format': 'alpaca',
-                    'use_query_rewriting': True
+                    'use_query_rewriting': False
                 },
                 timeout=self.generation_timeout
             )
