@@ -15,7 +15,12 @@ def generate_launch_description():
     pkg_description = get_package_share_directory('turtlebot3_manipulation_description')
     
     # Build resource paths for meshes
-    resource_paths = [pkg_description, os.path.dirname(pkg_description)]
+    resource_paths = [
+        pkg_description,
+        os.path.dirname(pkg_description),
+        '/workspace/worlds/models',
+        '/workspace/models/turtlebot3_gazebo/models',
+    ]
     gz_resource_path = ':'.join(resource_paths)
 
     # Paths

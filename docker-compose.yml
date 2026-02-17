@@ -7,23 +7,16 @@ services:
       dockerfile: Dockerfile
       platforms:
         - linux/amd64
-
-    #user: "${UID}:${GID}" # Build as current user to avoid permission issues
-
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
     container_name: btgencobot
     hostname: btgencobot
     ports:
       - "6080:6080" # noVNC web interface
       - "5901:5901" # VNC server
       - "8765:8765" # Foxglove Bridge
+    #user: "${UID}:${GID}" # Run container with host user permissions to avoid file permission issues
     volumes:
       # Mount only necessary directories instead of entire project
       - ./src:/workspace/src:cached
-      # Use read-only mounts for large model directories to improve performance and prevent accidental modifications
-      - /home/alberto/Desktop/AIRLab-POLIMI_llama-3.2-1b-it-ft-lora-bt:/workspace/models/AIRLab-POLIMI_llama-3.2-1b-it-ft-lora-bt:ro
       - ./robot_description:/workspace/robot_description:cached
       - ./worlds:/workspace/worlds:cached
       - ./models:/workspace/models:cached # Mount models as volume instead of copying
@@ -37,6 +30,11 @@ services:
       - DISPLAY=:1
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      # Gazebo resource paths to include mounted models
+      - IGN_GAZEBO_RESOURCE_PATH=/workspace/models/turtlebot3_gazebo/models:/workspace/models
+      - GZ_SIM_RESOURCE_PATH=/workspace/models/turtlebot3_gazebo/models:/workspace/models
+      - GAZEBO_MODEL_PATH=/workspace/models/turtlebot3_gazebo/models:/workspace/models
+
     stdin_open: true
     tty: true
-    command: /bin/bash
+    #command: /bin/bash
