@@ -99,7 +99,7 @@ def generate_launch_description():
             'use_sim_time': use_sim_time,
             'inference_server_url': inference_server_url,
             'bt_output_dir': bt_output_dir,
-            'generation_timeout': 30.0,
+            'generation_timeout': 180.0,
             'execution_timeout': 120.0
         }],
         output='screen',

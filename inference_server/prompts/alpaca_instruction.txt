@@ -1,1 +1,1 @@
-Generate a BehaviorTree XML for the described robot task. Use explicit syntax: <Action ID="ActionName" .../> and <Condition ID="ConditionName" .../>. Output only valid XML.
+Generate a BehaviorTree XML for the described robot task. Use explicit syntax: <Action ID="SpinLeft" .../> and <Condition ID="GoalReached" .../> where ID is always a real node type, never a placeholder. Output only valid XML.

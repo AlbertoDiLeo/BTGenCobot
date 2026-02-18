@@ -254,6 +254,133 @@ def parse_allowed_actions(rewritten_input: str) -> Tuple[Optional[List[str]], Op
     return actions, structure
 
 
+def _sanitize_actions(xml: str) -> str:
+    """Normalize generated Action tags to match expected BT schema."""
+    allowed_actions = {
+        "ComputePathToPose",
+        "FollowPath",
+        "NavigateToPose",
+        "SpinLeft",
+        "SpinRight",
+        "BackUp",
+        "DriveOnHeading",
+        "Wait",
+        "DetectObject",
+        "PickObject",
+        "PlaceObject",
+        "ClearEntireCostmap",
+    }
+
+    def parse_attrs(tag: str) -> Dict[str, str]:
+        return {k: v for k, v in re.findall(r'([a-zA-Z_][a-zA-Z0-9_]*)="([^"]*)"', tag)}
+
+    def infer_action_id(attrs: Dict[str, str]) -> Optional[str]:
+        current_id = attrs.get("ID")
+        name = attrs.get("name", "").strip().lower()
+
+        if current_id in allowed_actions:
+            return current_id
+
+        if "spin_dist" in attrs:
+            if "right" in name:
+                return "SpinRight"
+            return "SpinLeft"
+        if "backup_dist" in attrs or "backup_speed" in attrs:
+            return "BackUp"
+        if "wait_duration" in attrs:
+            return "Wait"
+        if "dist_to_travel" in attrs or ("dist" in attrs and "speed" in attrs):
+            return "DriveOnHeading"
+        if "controller_id" in attrs or ("path" in attrs and "goal" not in attrs):
+            return "FollowPath"
+        if "goal" in attrs and "path" in attrs:
+            return "ComputePathToPose"
+        if "goal" in attrs:
+            return "NavigateToPose"
+        if "target_pose" in attrs:
+            return "DetectObject"
+        if "place_description" in attrs:
+            return "PlaceObject"
+        if "object_description" in attrs:
+            if "place" in name:
+                return "PlaceObject"
+            if "pick" in name:
+                return "PickObject"
+            if "detect" in name or "find" in name:
+                return "DetectObject"
+            return "PickObject"
+        if "service_name" in attrs and "clear_entire_costmap" in attrs["service_name"]:
+            return "ClearEntireCostmap"
+        if "rotate left" in name:
+            return "SpinLeft"
+        if "rotate right" in name:
+            return "SpinRight"
+        if "move backward" in name:
+            return "BackUp"
+        if "drive forward" in name:
+            return "DriveOnHeading"
+        if "wait" in name:
+            return "Wait"
+        if "navigate" in name or "go to" in name:
+            return "NavigateToPose"
+
+        return None
+
+    def sanitize_action_tag(m: re.Match) -> str:
+        tag = m.group(0)
+        attrs = parse_attrs(tag)
+        inferred = infer_action_id(attrs)
+        if inferred:
+            attrs["ID"] = inferred
+
+        # Normalize common aliases/hallucinated fields
+        if attrs.get("ID") == "DriveOnHeading" and "dist" in attrs and "dist_to_travel" not in attrs:
+            attrs["dist_to_travel"] = attrs.pop("dist")
+        if attrs.get("ID") == "PlaceObject" and "place_description" not in attrs and "object_description" in attrs:
+            attrs["place_description"] = attrs.pop("object_description")
+
+        # Remove noisy attributes from Action nodes
+        attrs.pop("name", None)
+        attrs.pop("state", None)
+        attrs.pop("pose", None)
+
+        if "ID" not in attrs:
+            attrs["ID"] = "Wait"
+            attrs.setdefault("wait_duration", "1.0")
+
+        preferred_order = [
+            "ID",
+            "spin_dist",
+            "time_allowance",
+            "dist_to_travel",
+            "speed",
+            "backup_dist",
+            "backup_speed",
+            "wait_duration",
+            "goal",
+            "path",
+            "planner_id",
+            "controller_id",
+            "object_description",
+            "target_pose",
+            "place_description",
+            "service_name",
+        ]
+
+        rendered = []
+        for key in preferred_order:
+            if key in attrs:
+                rendered.append(f'{key}="{attrs[key]}"')
+        for key in sorted(attrs.keys()):
+            if key not in preferred_order:
+                rendered.append(f'{key}="{attrs[key]}"')
+
+        return "<Action " + " ".join(rendered) + "/>"
+
+    xml = re.sub(r'<Action\b[^>]*/>', sanitize_action_tag, xml)
+    return xml
+
+
 class BTGenerator:
     """BehaviorTree generator using Transformers + Outlines CFG constraints"""
 
@@ -486,6 +613,8 @@ class BTGenerator:
 
             if xml_result:
                 xml_result = extract_xml_from_response(xml_result)
+                xml_result = _sanitize_actions(xml_result)
+                
 
                 filter_obj = create_default_filter()
                 filtered_xml, was_modified, filter_reason = filter_obj.apply_filters(xml_result)
@@ -498,6 +627,13 @@ class BTGenerator:
 
                 if not is_valid:
                     logger.warning(f"Validation failed: {val_error}")
+
+                    # ===== AGGIUNGI QUESTO BLOCCO =====
+                    from pathlib import Path
+                    Path("failed_xml").mkdir(exist_ok=True)
+                    Path("failed_xml/latest.xml").write_text(xml_result, encoding="utf-8")
+                    logger.warning("Saved invalid XML to failed_xml/latest.xml")
+                    # ==================================
                     gen_time_ms = int((time.time() - start_time) * 1000)
                     return {
                         "bt_xml": xml_result,
@@ -510,6 +646,15 @@ class BTGenerator:
                 action_valid, action_issues = validate_action_space(xml_result)
                 if not action_valid:
                     logger.warning(f"Invalid actions: {'; '.join(action_issues)}")
+
+                    # SALVA SEMPRE L'XML "RAW" QUANDO FALLISCE ACTION SPACE
+                    from pathlib import Path
+                    out_dir = Path(__file__).resolve().parents[1] / "failed_xml"  # = inference_server/failed_xml
+                    out_dir.mkdir(exist_ok=True)
+                    (out_dir / "latest_invalid_actions.xml").write_text(xml_result, encoding="utf-8")
+                    logger.warning(f"Saved invalid-actions XML to {out_dir / 'latest_invalid_actions.xml'}")
+                    ################################################
+
                     gen_time_ms = int((time.time() - start_time) * 1000)
                     return {
                         "bt_xml": xml_result,

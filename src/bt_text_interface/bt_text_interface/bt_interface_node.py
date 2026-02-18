@@ -40,7 +40,7 @@ class BTInterfaceNode(Node):
         """Declare and load ROS parameters"""
         self.declare_parameter('inference_server_url', 'http://host.docker.internal:8080')
         self.declare_parameter('bt_output_dir', '/workspace/generated_bts')
-        self.declare_parameter('generation_timeout', 30.0)
+        self.declare_parameter('generation_timeout', 180.0)
         self.declare_parameter('execution_timeout', 300.0)
         self.declare_parameter('feedback_rate', 2.0)
 
