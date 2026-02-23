@@ -26,7 +26,7 @@ class ModelConfig(BaseModel):
     device: str = "mps"  # Apple Metal (mps) or cpu
 
     # Timeout settings
-    generation_timeout: int = 30  # seconds
+    generation_timeout: int = 360  # era 30 seconds
 
 
 class PathConfig(BaseModel):
