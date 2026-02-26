@@ -67,6 +67,10 @@ class Florence2Service(Node):
         self.florence2_processor = None
         self.bridge = CvBridge()
 
+        # Cache latest camera image so /detect_object can work even if request carries no image
+        self.latest_image = None
+        self.create_subscription(Image, "/camera", self._image_cb, 10)
+
         if not self.use_mock:
             if not DEPENDENCIES_AVAILABLE:
                 self.get_logger().error(f'Dependencies not available: {import_error}')
@@ -77,6 +81,9 @@ class Florence2Service(Node):
 
         if self.use_mock:
             self.get_logger().warning('Running in MOCK MODE - will return fake detections')
+
+    def _image_cb(self, msg: Image):
+        self.latest_image = msg
 
     def _load_models(self):
         """Load Florence-2 model"""
@@ -119,9 +126,50 @@ class Florence2Service(Node):
         """Handle detection service request"""
         try:
             start_time = time.time()
-            
-            # Convert ROS Image to OpenCV
-            cv_image = self.bridge.imgmsg_to_cv2(request.image, desired_encoding='rgb8')
+
+            # 0) If running in MOCK mode, bypass cv_bridge conversion completely
+            if self.use_mock:
+                result = self._mock_detect(None, request.object_description)
+
+                response.detected = result['detected']
+                response.confidence = result['confidence']
+                response.center_x = result['center_x']
+                response.center_y = result['center_y']
+                response.bbox = result['bbox']
+                response.phrase = result['phrase']
+                response.error_message = result.get('error', '')
+
+                response.mask = []
+                response.mask_height = 0
+                response.mask_width = 0
+
+                elapsed = (time.time() - start_time) * 1000
+                if result['detected']:
+                    self.get_logger().info(
+                        f'[MOCK] Detected "{result["phrase"]}" '
+                        f'({elapsed:.1f}ms)'
+                    )
+                else:
+                    self.get_logger().warn(f'[MOCK] Object not detected: {response.error_message} ({elapsed:.1f}ms)')
+                return response
+
+            # 1) Choose image source: request.image if valid, else latest /camera
+            img_msg = request.image
+            if (
+                img_msg is None
+                or getattr(img_msg, "encoding", "") == ""
+                or getattr(img_msg, "width", 0) == 0
+                or getattr(img_msg, "height", 0) == 0
+            ):
+                if self.latest_image is None:
+                    return self._create_error_response(
+                        response,
+                        "No image in request and no /camera image received yet"
+                    )
+                img_msg = self.latest_image
+
+            # 2) Convert ROS Image to OpenCV
+            cv_image = self.bridge.imgmsg_to_cv2(img_msg, desired_encoding='rgb8')
             self.get_logger().info(
                 f'Detection request: "{request.object_description}" '
                 f'(image: {cv_image.shape[1]}x{cv_image.shape[0]})'
@@ -190,13 +238,13 @@ class Florence2Service(Node):
             # Use Florence-2's Open Vocabulary Detection task
             # This translates to: "Locate {text_prompt} in the image."
             task_prompt = '<OPEN_VOCABULARY_DETECTION>'
-            
+
             # Clean up the prompt - replace underscores with spaces for natural language
             clean_prompt = text_prompt.replace('_', ' ')
             prompt = task_prompt + clean_prompt
 
             self.get_logger().info(f'Using Florence-2 OVD: "Locate {clean_prompt} in the image."')
-            
+
             # Prepare inputs
             inputs = self.florence2_processor(
                 text=prompt,
@@ -280,8 +328,15 @@ class Florence2Service(Node):
             return self._create_detection_result(detected=False, error=str(e))
 
     def _mock_detect(self, image, text_prompt):
-        """Mock detection for testing"""
-        h, w = image.shape[:2]
+        """Mock detection for testing.
+        In MOCK mode we may not have an image, so don't assume shape exists.
+        """
+        # If no image is provided, return a consistent fake bbox in a 640x480 frame
+        if image is None:
+            w, h = 640, 480
+        else:
+            h, w = image.shape[:2]
+
         center_x = w / 2.0
         center_y = h / 2.0
         bbox_width = w * 0.2
@@ -302,7 +357,6 @@ class Florence2Service(Node):
             bbox=[x1, y1, x2, y2],
             phrase=text_prompt
         )
-
 
     def _create_detection_result(self, detected=False, confidence=0.0, center_x=-1.0,
                                   center_y=-1.0, bbox=None, phrase='', error='', mask=None,
@@ -361,14 +415,14 @@ class Florence2Service(Node):
                             color, -1)
                 cv2.putText(debug_img, label, (x1 + 5, y1 - 7),
                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-            
+
             # Publish
             debug_img_rgb = cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB)
             debug_msg = self.bridge.cv2_to_imgmsg(debug_img_rgb, encoding='rgb8')
             debug_msg.header.stamp = self.get_clock().now().to_msg()
             debug_msg.header.frame_id = 'camera_rgb_optical_frame'
             self.debug_image_pub.publish(debug_msg)
-            
+
         except Exception as e:
             self.get_logger().error(f'Failed to publish debug image: {e}')
 
