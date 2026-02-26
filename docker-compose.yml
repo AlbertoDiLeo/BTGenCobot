@@ -1,5 +1,4 @@
 services:
-  # All-in-one ROS2 workspace with Gazebo, Nav2, and ML dependencies
   btgencobot:
     platform: linux/amd64
     build:
@@ -9,18 +8,20 @@ services:
         - linux/amd64
     container_name: btgencobot
     hostname: btgencobot
+
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
     ports:
-      - "6080:6080" # noVNC web interface
-      - "5901:5901" # VNC server
-      - "8765:8765" # Foxglove Bridge
+      - "6080:6080"
+      - "5901:5901"
+      - "8765:8765"
     volumes:
-      # Mount only necessary directories instead of entire project
       - ./src:/workspace/src:cached
       - ./robot_description:/workspace/robot_description:cached
       - ./worlds:/workspace/worlds:cached
-      - ./models:/workspace/models:cached # Mount models as volume instead of copying
+      - ./models:/workspace/models:cached
       - ./scripts:/workspace/scripts:cached
-      # ROS2 build artifacts (use delegated for better performance)
       - ./install:/workspace/install:delegated
       - ./build:/workspace/build:delegated
       - ./log:/workspace/log:delegated
