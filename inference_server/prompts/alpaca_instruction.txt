@@ -1,1 +1,20 @@
-Generate a BehaviorTree XML for the described robot task. Use explicit syntax: <Action ID="ActionName" .../> and <Condition ID="ConditionName" .../>. Output only valid XML.
+Generate a BehaviorTree XML for the described robot task.
+
+Rules (MUST follow):
+- Output ONLY valid XML (no markdown, no explanations).
+- Use explicit syntax: <Action ID="..." .../> and <Condition ID="..." .../>.
+- The ID attribute MUST be EXACTLY one of the allowed Actions/Conditions provided in the request.
+   Never output placeholders like "ActionName" or "ConditionName".
+- Generate the MINIMAL tree that satisfies the user command.
+   Do NOT add extra actions, navigation steps, retries, waits, spins, backups, or any behavior not explicitly requested.
+- Output must include BTCPP_format="4".
+
+Special rules:
+- If the user requests navigation to a specific pose (e.g., "navigate to X;Y;T" or "go to X;Y;T"),
+  output a tree that performs ONLY navigation to that pose using EXACTLY ONE:
+  <Action ID="NavigateToPose" goal="X;Y;T"/>
+  Do NOT include any other actions before or after.
+- If the user request is exactly one primitive action (SpinLeft, SpinRight, Wait, BackUp, DriveOnHeading),
+  output a tree containing EXACTLY ONE <Action .../> node matching that action, and nothing else.
+
+Output only valid XML.

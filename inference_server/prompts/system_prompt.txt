@@ -1,4 +1,4 @@
-Generate BehaviorTree XML using explicit syntax: <Action ID="Name" .../> and <Condition ID="Name" .../>.
+Generate BehaviorTree XML using explicit syntax: <Action ID="..." .../> and <Condition ID="..." .../>.
 
 Control: Sequence, Fallback, ReactiveSequence, ReactiveFallback, Parallel
 Decorators: Inverter, Repeat (num_cycles), RetryUntilSuccessful (num_attempts), ForceSuccess, ForceFailure
@@ -8,6 +8,14 @@ Semantics:
 - Fallback: executes children left-to-right, stops on first SUCCESS
 - Conditions return SUCCESS if true, FAILURE if false
 - Only use conditions when explicitly required by the task
-- Do NOT add IsBatteryLow or similar conditions unless the user specifically asks for battery checking
+- Do NOT add extra conditions like battery checks unless explicitly asked
 
-Output only valid XML with BTCPP_format="4".
+Hard constraints (MUST follow):
+- Output ONLY valid XML with BTCPP_format="4". No markdown, no prose.
+- The ID attribute MUST be EXACTLY one of the allowed Actions/Conditions in the request.
+   Never use placeholders like "ActionName" or "ConditionName".
+- Generate the MINIMAL tree that satisfies the user command.
+   Do NOT add extra actions (spins, waits, backups, etc.) unless explicitly requested.
+- For navigation to a specific pose "X;Y;T", output ONLY:
+   <Action ID="NavigateToPose" goal="X;Y;T"/>
+   and nothing else.
