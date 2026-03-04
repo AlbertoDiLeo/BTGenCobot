@@ -16,6 +16,7 @@ services:
       - "6080:6080"
       - "5901:5901"
       - "8765:8765"
+      - "8001:8001" 
     volumes:
       - ./src:/workspace/src:cached
       - ./robot_description:/workspace/robot_description:cached
@@ -25,6 +26,8 @@ services:
       - ./install:/workspace/install:delegated
       - ./build:/workspace/build:delegated
       - ./log:/workspace/log:delegated
+      - ./web_gateway:/workspace/web_gateway:cached
+      - ./web_gateway:/opt/web_gateway:cached
     environment:
       - ROS_DOMAIN_ID=42
       - DISPLAY=:1

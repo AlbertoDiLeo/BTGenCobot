@@ -64,6 +64,17 @@ RUN pip3 install --break-system-packages \
   sympy \
   ikpy>=3.3
 
+
+# --- Web gateway (FastAPI) ---
+# Copy gateway code into the image so deps can be installed at build time
+COPY web_gateway /opt/web_gateway
+
+# Create a dedicated venv for the gateway and install deps
+RUN apt-get update && apt-get install -y python3.12-venv && rm -rf /var/lib/apt/lists/* && \
+    python3 -m venv /opt/webgw-venv && \
+    /opt/webgw-venv/bin/pip install --no-cache-dir -r /opt/web_gateway/requirements.txt && \
+    /opt/webgw-venv/bin/pip install --no-cache-dir numpy
+
 # Create workspace
 WORKDIR /workspace
 
@@ -169,7 +180,7 @@ fi\n' > /entrypoint.sh && \
 ENV DISPLAY=:1
 
 # Expose ports
-EXPOSE 6080 5901 8765 8080
+EXPOSE 6080 5901 8765 8080 8001
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["/bin/bash"]
