@@ -1,4 +1,6 @@
 """ROS2 Action Server for BehaviorTree Generation and Execution"""
+import hashlib
+import json
 import time
 import uuid
 import xml.etree.ElementTree as ET
@@ -16,6 +18,7 @@ from rclpy.qos import QoSProfile, DurabilityPolicy, HistoryPolicy, ReliabilityPo
 
 from btgencobot_interfaces.action import GenerateAndExecuteBT
 from nav2_msgs.action import NavigateToPose
+from nav2_msgs.msg import BehaviorTreeLog
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
@@ -58,6 +61,10 @@ class BTInterfaceNode(Node):
         self.current_nav_goal_handle = None
         self.is_executing = False
         self.last_bt_xml = None  # Store last executed BT for republishing
+        self.active_tree_id = None
+        self.active_xml_hash = None
+        self.uid_lookup = {}
+        self.node_status = {}
 
     def _setup_interfaces(self):
         """Setup ROS interfaces: publishers, subscribers, action servers/clients, services"""
@@ -71,6 +78,17 @@ class BTInterfaceNode(Node):
             depth=1
         )
         self._bt_xml_publisher = self.create_publisher(String, '/generated_behavior_tree', qos_latched)
+        self._active_tree_publisher = self.create_publisher(String, '/bt_active_tree', qos_latched)
+
+        self._bt_execution_event_publisher = self.create_publisher(String, '/bt_execution_event', 10)
+        self._bt_execution_state_publisher = self.create_publisher(String, '/bt_execution_state', 10)
+
+        self._bt_log_subscriber = self.create_subscription(
+            BehaviorTreeLog,
+            '/behavior_tree_log',
+            self.behavior_tree_log_callback,
+            10
+        )
 
         # Republish last BT every 2 seconds for visibility
         self.bt_republish_timer = self.create_timer(2.0, self._republish_last_bt)
@@ -159,15 +177,29 @@ class BTInterfaceNode(Node):
             self.get_logger().info('BT validation successful')
 
             self.publish_feedback(goal_handle, 'validating', 0.4, 'Writing BT to file...')
-            bt_file_path = self.write_bt_file(bt_xml)
+            bt_xml_with_uids, context = self.prepare_bt_for_execution(bt_xml)
+            self.active_tree_id = context['tree_id']
+            self.active_xml_hash = context['xml_hash']
+            self.uid_lookup = context['uid_lookup']
+            self.node_status = {'root': 'IDLE'}
+
+            bt_file_path = self.write_bt_file(bt_xml_with_uids)
             result.bt_xml_path = str(bt_file_path)
             self.get_logger().info(f'BT written to: {bt_file_path}')
 
-            # Store the original BT and publish with UIDs for Foxglove visualization
-            self.last_bt_xml = bt_xml
+            # Store and publish the active BT with stable UIDs for frontend alignment
+            self.last_bt_xml = bt_xml_with_uids
             bt_msg = String()
-            bt_msg.data = self.add_uids_for_foxglove(bt_xml)
+            bt_msg.data = bt_xml_with_uids
             self._bt_xml_publisher.publish(bt_msg)
+
+            active_tree_msg = String()
+            active_tree_msg.data = json.dumps({
+                'treeId': self.active_tree_id,
+                'xmlHash': self.active_xml_hash,
+                'ts': self.current_time_ms()
+            })
+            self._active_tree_publisher.publish(active_tree_msg)
             self.get_logger().info('BT published to /generated_behavior_tree topic')
 
             self.publish_feedback(goal_handle, 'executing', 0.5, 'Executing BehaviorTree...')
@@ -195,6 +227,55 @@ class BTInterfaceNode(Node):
             self.current_goal_handle = None
 
         return result
+
+    def prepare_bt_for_execution(self, xml_string: str) -> tuple[str, dict]:
+        """Inject stable uid attributes into BT nodes and build lookup metadata."""
+        root = ET.fromstring(xml_string)
+        xml_hash = hashlib.sha256(xml_string.encode('utf-8')).hexdigest()[:16]
+        tree_id = f"bt_{datetime.now().strftime('%Y%m%dT%H%M%S')}_{xml_hash}"
+
+        uid_lookup = {
+            'by_name': {},
+            'by_id': {},
+            'by_tag': {},
+        }
+
+        counter = 0
+
+        def sanitize(value: str) -> str:
+            return ''.join(ch if ch.isalnum() else '_' for ch in value).strip('_').lower()[:40]
+
+        def register_lookup(element, uid: str):
+            name_attr = element.get('name')
+            id_attr = element.get('ID')
+            tag = element.tag
+
+            if name_attr and name_attr not in uid_lookup['by_name']:
+                uid_lookup['by_name'][name_attr] = uid
+            if id_attr and id_attr not in uid_lookup['by_id']:
+                uid_lookup['by_id'][id_attr] = uid
+            uid_lookup['by_tag'].setdefault(tag, []).append(uid)
+
+        def walk(element):
+            nonlocal counter
+            counter += 1
+            base = sanitize(f"{element.tag}_{element.get('name') or element.get('ID') or counter}")
+            uid = f"n_{counter:04d}_{base}"
+            element.set('uid', uid)
+            element.set('_uid', uid)
+            register_lookup(element, uid)
+
+            for child in element:
+                walk(child)
+
+        walk(root)
+
+        context = {
+            'tree_id': tree_id,
+            'xml_hash': xml_hash,
+            'uid_lookup': uid_lookup,
+        }
+        return ET.tostring(root, encoding='unicode', xml_declaration=True), context
 
     async def generate_bt_from_command(self, command: str) -> tuple[Optional[str], Optional[str]]:
         """Call the inference server to generate BT XML from natural language command.
@@ -265,81 +346,81 @@ class BTInterfaceNode(Node):
         except Exception as e:
             return False, f'Validation error: {str(e)}'
 
-    def add_uids_for_foxglove(self, xml_string: str) -> str:
-        """Add unique _uid attributes to all nodes for Foxglove Polymath BT panel visualization.
-        This is only used for publishing to the topic, not for the file written to disk."""
-        try:
-            root = ET.fromstring(xml_string)
-            node_counts = {}  # Track counts per node type for uniqueness
+    def behavior_tree_log_callback(self, msg: BehaviorTreeLog):
+        """Convert Nav2 BehaviorTreeLog transitions into frontend-friendly JSON events."""
+        if not self.active_tree_id:
+            return
 
-            def add_uid_recursive(element):
-                """Recursively add _uid to element and all children."""
-                tag = element.tag
+        for change in msg.event_log:
+            node_name = getattr(change, 'node_name', '')
+            from_state = self.normalize_status(getattr(change, 'previous_status', 'UNKNOWN'))
+            to_state = self.normalize_status(getattr(change, 'current_status', 'UNKNOWN'))
+            uid = self.resolve_uid(node_name)
 
-                # Build a meaningful UID based on node type and attributes
-                if tag == 'root':
-                    uid = 'root'
-                elif tag == 'BehaviorTree':
-                    tree_id = element.get('ID', 'Tree')
-                    uid = f'BehaviorTree_{tree_id}'
-                else:
-                    # For action/condition/control nodes, use tag + name or key attribute
-                    name = element.get('name')
-                    node_id = element.get('ID')  # For explicit syntax <Action ID="..."/>
+            event = {
+                'treeId': self.active_tree_id,
+                'xmlHash': self.active_xml_hash,
+                'uid': uid,
+                'nodeName': node_name,
+                'from': from_state,
+                'to': to_state,
+                'ts': self.current_time_ms(),
+            }
+            self.node_status[uid] = to_state
+            self.publish_execution_event(event)
 
-                    if name:
-                        base = f'{tag}_{name}'
-                    elif node_id:
-                        base = f'{tag}_{node_id}'
-                    elif tag in ('Action', 'Condition'):
-                        # Explicit syntax without name
-                        base = tag
-                    else:
-                        # Control/decorator nodes or leaf nodes with compact syntax
-                        base = tag
+        self.publish_execution_snapshot()
 
-                    # Add distinguishing attribute for certain nodes
-                    if tag == 'DetectObject':
-                        obj = element.get('object_description', '')
-                        if obj:
-                            base = f'{tag}_{obj}'
-                    elif tag == 'PickObject':
-                        obj = element.get('object_description', '')
-                        if obj:
-                            base = f'{tag}_{obj}'
-                    elif tag == 'PlaceObject':
-                        desc = element.get('place_description', '')
-                        if desc:
-                            base = f'{tag}_{desc}'
-                    elif tag in ('SpinLeft', 'SpinRight'):
-                        dist = element.get('spin_dist', '')
-                        if dist:
-                            base = f'{tag}_{dist}rad'
-                    elif tag == 'Wait':
-                        dur = element.get('wait_duration', '')
-                        if dur:
-                            base = f'{tag}_{dur}s'
-                    elif tag == 'Repeat':
-                        cycles = element.get('num_cycles', '')
-                        if cycles:
-                            base = f'{tag}_{cycles}x'
+    def resolve_uid(self, node_name: str) -> str:
+        """Resolve a Nav2 node name to generated uid for frontend alignment."""
+        if node_name in self.uid_lookup.get('by_name', {}):
+            return self.uid_lookup['by_name'][node_name]
+        if node_name in self.uid_lookup.get('by_id', {}):
+            return self.uid_lookup['by_id'][node_name]
 
-                    # Sanitize and ensure uniqueness
-                    base = base.replace(' ', '_').replace('"', '').replace("'", '')
-                    node_counts[base] = node_counts.get(base, 0) + 1
-                    count = node_counts[base]
-                    uid = f'{base}_{count}' if count > 1 else base
+        by_tag = self.uid_lookup.get('by_tag', {}).get(node_name, [])
+        if len(by_tag) == 1:
+            return by_tag[0]
+        if by_tag:
+            return by_tag[0]
 
-                element.set('_uid', uid)
-                for child in element:
-                    add_uid_recursive(child)
+        return f'unknown_{node_name or "node"}'
 
-            add_uid_recursive(root)
+    def publish_execution_event(self, payload: dict):
+        msg = String()
+        msg.data = json.dumps(payload)
+        self._bt_execution_event_publisher.publish(msg)
 
-            return ET.tostring(root, encoding='unicode', xml_declaration=True)
+    def publish_execution_snapshot(self):
+        msg = String()
+        msg.data = json.dumps({
+            'treeId': self.active_tree_id,
+            'xmlHash': self.active_xml_hash,
+            'ts': self.current_time_ms(),
+            'nodes': [{'uid': uid, 'status': status} for uid, status in sorted(self.node_status.items())],
+        })
+        self._bt_execution_state_publisher.publish(msg)
 
-        except ET.ParseError:
-            return xml_string
+    @staticmethod
+    def normalize_status(status) -> str:
+        status_map = {
+            0: 'IDLE',
+            1: 'RUNNING',
+            2: 'SUCCESS',
+            3: 'FAILURE',
+            4: 'SKIPPED',
+            5: 'HALTED',
+        }
+        if isinstance(status, int):
+            return status_map.get(status, 'UNKNOWN')
+
+        normalized = str(status or 'UNKNOWN').upper()
+        known = {'IDLE', 'RUNNING', 'SUCCESS', 'FAILURE', 'SKIPPED', 'HALTED', 'UNKNOWN'}
+        return normalized if normalized in known else 'UNKNOWN'
+
+    @staticmethod
+    def current_time_ms() -> int:
+        return int(time.time() * 1000)
 
     def write_bt_file(self, xml_content: str) -> Path:
         """Write BT XML to file with UUID naming. Returns path to written file."""
@@ -501,7 +582,7 @@ class BTInterfaceNode(Node):
         """Periodically republish the last executed BT for late-joining subscribers"""
         if self.last_bt_xml is not None:
             bt_msg = String()
-            bt_msg.data = self.add_uids_for_foxglove(self.last_bt_xml)
+            bt_msg.data = self.last_bt_xml
             self._bt_xml_publisher.publish(bt_msg)
 
 
