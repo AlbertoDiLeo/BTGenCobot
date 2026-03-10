@@ -9,6 +9,7 @@ from typing import Optional, Any
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -72,6 +73,13 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 class GenerateBTRequest(BaseModel):
     """Request model for BT generation"""
@@ -79,7 +87,7 @@ class GenerateBTRequest(BaseModel):
     max_tokens: int = Field(1024, description="Maximum tokens to generate", gt=0, le=4096)
     temperature: float = Field(0.6, description="Sampling temperature", ge=0.0, le=2.0)
     prompt_format: str = Field("chat", description="Prompt format: 'chat' (Llama chat) or 'alpaca' (instruction format)")
-    use_query_rewriting: bool = Field(False, description="Whether to use LLM query rewriting to expand command")
+    use_query_rewriting: bool = Field(True, description="Whether to use LLM query rewriting to expand command")
     custom_instruction: str | None = Field(None, description="Optional custom instruction to override default alpaca_instruction.txt")
 
     class Config:
@@ -89,7 +97,7 @@ class GenerateBTRequest(BaseModel):
                 "max_tokens": 1024,
                 "temperature": 0.6,
                 "prompt_format": "alpaca",
-                "use_query_rewriting": False
+                "use_query_rewriting": True
             }
         }
 
@@ -131,6 +139,22 @@ class EmergencyStopResponse(BaseModel):
     message: str = Field(..., description="Status message")
 
 
+class ExecuteCommandRequest(BaseModel):
+    """Request model for /execute — generate BT and send command to robot"""
+    command: str = Field(..., description="Natural language command", min_length=1)
+    temperature: float = Field(0.1, description="Sampling temperature", ge=0.0, le=2.0)
+    foxglove_ws_url: str = Field("ws://localhost:8765", description="Foxglove Bridge WebSocket URL")
+
+
+class ExecuteCommandResponse(BaseModel):
+    """Response model for /execute"""
+    success: bool = Field(..., description="Whether BT generation succeeded")
+    bt_xml: Optional[str] = Field(None, description="Generated BehaviorTree XML")
+    generation_time_ms: int = Field(..., description="Generation time in milliseconds")
+    ros_command_sent: bool = Field(..., description="Whether the command was forwarded to ROS2")
+    error: Optional[str] = Field(None, description="Error message if generation failed")
+
+
 @app.get("/", response_model=dict)
 async def root():
     """Root endpoint with API information"""
@@ -139,9 +163,10 @@ async def root():
         "version": "1.0.0",
         "status": "running" if state.model_loaded else "initializing",
         "endpoints": {
-            "POST /generate_bt": "Generate BehaviorTree from natural language",
+            "POST /generate_bt": "Generate BehaviorTree XML from natural language (no robot execution)",
+            "POST /execute": "Generate BT and send command to robot via ROS2",
             "GET /health": "Check server health",
-            "POST /emergency_stop": "Emergency stop (placeholder for future use)"
+            "POST /emergency_stop": "Emergency stop"
         }
     }
 
@@ -233,6 +258,83 @@ async def generate_bt(request: GenerateBTRequest):
             status_code=500,
             detail=error_msg
         )
+
+
+@app.post("/execute", response_model=ExecuteCommandResponse)
+async def execute_command(request: ExecuteCommandRequest):
+    """
+    Generate BehaviorTree from natural language and send the command to the robot.
+
+    This is the main endpoint for the frontend:
+    1. Generates the BT XML (with query rewriting via Claude/OpenRouter)
+    2. Publishes the command to ROS2 /btgen_nl_command via Foxglove WebSocket Bridge
+    3. Returns the generated XML so the frontend can render it immediately
+
+    The robot (inside the Docker container) receives the command, re-generates the BT
+    and executes it via Nav2. Real-time execution status is available via Foxglove WS
+    topics: /generated_behavior_tree and /behavior_tree_log.
+    """
+    state.total_requests += 1
+
+    if not state.model_loaded or state.generator is None:
+        state.failed_requests += 1
+        raise HTTPException(status_code=503, detail="Model not loaded.")
+
+    logger.info("=" * 80)
+    logger.info(f"/execute request — Command: {request.command!r}")
+
+    try:
+        start_time = time.time()
+
+        # 1. Rewrite the command
+        from core.query_rewriter import rewrite_command
+        rewritten_input = rewrite_command(request.command)
+        if rewritten_input:
+            logger.info(f"Rewritten input:\n{rewritten_input}")
+
+        # 2. Generate BT XML (preview for the frontend)
+        result = state.generator.generate_bt(
+            command=request.command,
+            max_tokens=1024,
+            temperature=request.temperature,
+            prompt_format="alpaca",
+            rewritten_input=rewritten_input,
+        )
+
+        if not result["success"]:
+            state.failed_requests += 1
+            return ExecuteCommandResponse(
+                success=False,
+                bt_xml=None,
+                generation_time_ms=result.get("generation_time_ms", 0),
+                ros_command_sent=False,
+                error=result.get("error"),
+            )
+
+        state.successful_requests += 1
+        logger.info(f"BT generated in {result['generation_time_ms']}ms")
+
+        # 3. Publish command to ROS2 via Foxglove WebSocket
+        from core.ros_bridge import publish_nl_command
+        ros_sent = await publish_nl_command(request.command, ws_url=request.foxglove_ws_url)
+        if ros_sent:
+            logger.info("Command forwarded to ROS2 successfully")
+        else:
+            logger.warning("Could not forward command to ROS2 (Foxglove Bridge unreachable?)")
+
+        logger.info("=" * 80)
+
+        return ExecuteCommandResponse(
+            success=True,
+            bt_xml=result["bt_xml"],
+            generation_time_ms=result["generation_time_ms"],
+            ros_command_sent=ros_sent,
+        )
+
+    except Exception as e:
+        state.failed_requests += 1
+        logger.error(f"/execute error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/emergency_stop", response_model=EmergencyStopResponse)

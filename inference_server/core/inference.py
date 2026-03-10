@@ -4,8 +4,37 @@ import logging
 import re
 from typing import Optional, Dict, Any, Tuple, List
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
+
+
+def _fix_main_tree_to_execute(xml_string: str) -> str:
+    """
+    Ensure main_tree_to_execute matches the ID of the first BehaviorTree element.
+    The model sometimes generates main_tree_to_execute="Control" (a node type) instead
+    of the actual BehaviorTree ID.
+    """
+    try:
+        root = ET.fromstring(xml_string)
+        if root.tag != "root":
+            return xml_string
+
+        bt_elements = root.findall("BehaviorTree")
+        if not bt_elements:
+            return xml_string
+
+        first_id = bt_elements[0].get("ID")
+        main_tree = root.get("main_tree_to_execute")
+
+        if first_id and main_tree != first_id:
+            root.set("main_tree_to_execute", first_id)
+            logger.debug(f"Fixed main_tree_to_execute: '{main_tree}' → '{first_id}'")
+            return ET.tostring(root, encoding="unicode", xml_declaration=False)
+
+        return xml_string
+    except ET.ParseError:
+        return xml_string
 
 
 def generate_restricted_grammar(allowed_actions: List[str], structure: Optional[str] = None, max_depth: int = 5) -> str:
@@ -498,6 +527,8 @@ class BTGenerator:
                 if was_modified:
                     logger.info(f"Post-processing applied: {filter_reason}")
                     xml_result = filtered_xml
+
+                xml_result = _fix_main_tree_to_execute(xml_result)
 
                 is_valid, val_error = validate_bt_xml(xml_result, strict=False)
 
