@@ -1,6 +1,9 @@
 """FastAPI Server for BehaviorTree Generation"""
 import logging
 import time
+from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent.parent / ".env")
 from datetime import datetime
 from typing import Optional, Any
 from contextlib import asynccontextmanager

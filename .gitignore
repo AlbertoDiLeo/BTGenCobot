@@ -35,6 +35,9 @@ Thumbs.db
 *.h5
 *.pb
 
+# Secrets
+inference_server/.env
+
 # Cache
 .cache/
 .cache/huggingface/
