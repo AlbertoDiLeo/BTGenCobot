@@ -24,6 +24,8 @@ services:
       - ./install:/workspace/install:delegated
       - ./build:/workspace/build:delegated
       - ./log:/workspace/log:delegated
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - ROS_DOMAIN_ID=42
       - DISPLAY=:1
