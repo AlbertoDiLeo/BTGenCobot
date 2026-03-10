@@ -290,12 +290,17 @@ class BTGenerator:
             logger.info(f"Loading base model from: {self.model_path}")
             self.tokenizer = AutoTokenizer.from_pretrained(str(self.model_path))
 
-            device = "mps" if torch.backends.mps.is_available() else "cpu"
+            if torch.cuda.is_available():
+                device = "cuda"
+            elif torch.backends.mps.is_available():
+                device = "mps"
+            else:
+                device = "cpu"
             logger.info(f"Using device: {device}")
 
             base_model = AutoModelForCausalLM.from_pretrained(
                 str(self.model_path),
-                torch_dtype=torch.float16 if device == "mps" else torch.float32,
+                torch_dtype=torch.float16 if device in ("cuda", "mps") else torch.float32,
                 device_map="auto",
                 low_cpu_mem_usage=True
             )

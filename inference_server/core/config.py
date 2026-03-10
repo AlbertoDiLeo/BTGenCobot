@@ -23,7 +23,7 @@ class ModelConfig(BaseModel):
 
     # Backend configuration
     backend: str = "transformers"  # Hugging Face transformers with Outlines
-    device: str = "mps"  # Apple Metal (mps) or cpu
+    device: str = "cuda"  # NVIDIA CUDA (cuda), Apple Metal (mps) or cpu
 
     # Timeout settings
     generation_timeout: int = 30  # seconds
