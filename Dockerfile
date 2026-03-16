@@ -57,7 +57,7 @@ RUN pip3 install --break-system-packages \
   'numpy<2.0' \
   pillow \
   opencv-python>=4.8.0 \
-  transformers \
+  'transformers>=4.47.0,<5.0' \
   einops \
   timm \
   scipy \

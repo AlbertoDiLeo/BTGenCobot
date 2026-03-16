@@ -90,7 +90,7 @@ class Florence2Service(Node):
                 self.florence2_model_name,
                 torch_dtype=torch_dtype,
                 trust_remote_code=True,
-                attn_implementation='eager'  # Workaround for transformers compatibility
+                attn_implementation='eager'
             ).to(self.device)
             self.florence2_processor = AutoProcessor.from_pretrained(
                 self.florence2_model_name,
