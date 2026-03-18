@@ -133,6 +133,11 @@ class HealthResponse(BaseModel):
     failed_requests: int = Field(0, description="Number of failed requests")
 
 
+class EmergencyStopRequest(BaseModel):
+    """Request model for emergency stop"""
+    foxglove_ws_url: str = Field("ws://localhost:8765", description="Foxglove Bridge WebSocket URL")
+
+
 class EmergencyStopResponse(BaseModel):
     """Response model for emergency stop"""
     success: bool = Field(..., description="Whether stop was successful")
@@ -338,19 +343,38 @@ async def execute_command(request: ExecuteCommandRequest):
 
 
 @app.post("/emergency_stop", response_model=EmergencyStopResponse)
-async def emergency_stop():
+async def emergency_stop(request: EmergencyStopRequest):
     """
     Emergency stop endpoint
-
-    This is a placeholder for future functionality to abort ongoing generation.
-    Currently just returns success.
+    Ferma l'esecuzione corrente inviando il comando 'STOP_EXECUTION' a ROS2,
+    senza generare o avviare un nuovo Behavior Tree.
     """
-    logger.warning("Emergency stop called (currently a no-op)")
+    logger.warning("Emergency stop called, forwarding to ROS2...")
 
-    return EmergencyStopResponse(
-        success=True,
-        message="Emergency stop acknowledged (no active generation to abort)"
-    )
+    try:
+        from core.ros_bridge import publish_nl_command
+        
+        # Inviamo la stringa magica "STOP_EXECUTION" che il nodo ROS2 riconosce
+        # per cancellare il goal di Nav2 senza chiamare l'LLM
+        ros_sent = await publish_nl_command("STOP_EXECUTION", ws_url=request.foxglove_ws_url)
+        
+        if ros_sent:
+            return EmergencyStopResponse(
+                success=True,
+                message="Execution stopped by user"
+            )
+        else:
+            return EmergencyStopResponse(
+                success=False,
+                message="Failed to send stop command to ROS2 (Foxglove Bridge unreachable?)"
+            )
+
+    except Exception as e:
+        logger.error(f"Error during emergency stop: {e}", exc_info=True)
+        return EmergencyStopResponse(
+            success=False,
+            message=f"Internal server error: {str(e)}"
+        )
 
 
 @app.exception_handler(404)
@@ -365,6 +389,7 @@ async def not_found_handler(request, exc):
                 "GET /",
                 "GET /health",
                 "POST /generate_bt",
+                "POST /execute",
                 "POST /emergency_stop"
             ]
         }
