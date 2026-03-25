@@ -95,6 +95,69 @@ def _simplify_place_only_bt(xml_string: str, command: str) -> str:
         return xml_string
 
 
+def _simplify_simple_command_duplicates(xml_string: str, command: str) -> str:
+    """
+    Remove duplicated execution nodes for simple commands where the model may
+    spuriously repeat the same high-level action.
+    """
+    cmd = command.lower()
+    is_place_only = (
+        any(token in cmd for token in ["place", "put", "set down", "deposit"]) and
+        not any(token in cmd for token in ["pick up", "pick", "grab", "grasp", "take"])
+    )
+    is_detect_only = (
+        any(token in cmd for token in ["detect", "find", "look for", "search"]) and
+        not any(token in cmd for token in ["place", "put", "set down", "deposit", "pick up", "pick", "grab", "grasp", "take"])
+    )
+    if not (is_place_only or is_detect_only):
+        return xml_string
+
+    try:
+        root = ET.fromstring(xml_string)
+        behavior_trees = root.findall("BehaviorTree")
+        if not behavior_trees:
+            return xml_string
+
+        for bt in behavior_trees:
+            if len(bt) != 1:
+                continue
+
+            container = bt[0]
+            if container.tag not in {"Sequence", "ReactiveSequence"}:
+                continue
+
+            children = list(container)
+            kept_children = []
+            kept_place = False
+            kept_detect = False
+            modified = False
+
+            for child in children:
+                child_id = child.get("ID") if child.tag == "Action" else None
+
+                if is_place_only and child_id == "PlaceObject":
+                    if kept_place:
+                        modified = True
+                        continue
+                    kept_place = True
+
+                if is_detect_only and child_id == "DetectObject":
+                    if kept_detect:
+                        modified = True
+                        continue
+                    kept_detect = True
+
+                kept_children.append(child)
+
+            if modified and kept_children:
+                container[:] = kept_children
+                logger.info("Removed duplicated action nodes for simple command generation")
+
+        return ET.tostring(root, encoding="unicode", xml_declaration=False)
+    except ET.ParseError:
+        return xml_string
+
+
 def generate_restricted_grammar(allowed_actions: List[str], structure: Optional[str] = None, max_depth: int = 5) -> str:
     """
     Generate a restricted EBNF grammar using EXPLICIT syntax: <Action ID="NodeType" .../>.
@@ -559,7 +622,12 @@ class BTGenerator:
             }
 
         from prompts import build_prompt, build_alpaca_prompt, extract_xml_from_response
-        from validation.validator import validate_bt_xml, validate_action_space, validate_semantic_structure
+        from validation.validator import (
+            validate_bt_xml,
+            validate_action_space,
+            validate_semantic_structure,
+            validate_command_semantics,
+        )
         from validation.post_processor import create_default_filter
 
         start_time = time.time()
@@ -600,6 +668,7 @@ class BTGenerator:
                     xml_result = filtered_xml
 
                 xml_result = _simplify_place_only_bt(xml_result, command)
+                xml_result = _simplify_simple_command_duplicates(xml_result, command)
                 xml_result = _fix_main_tree_to_execute(xml_result)
 
                 is_valid, val_error = validate_bt_xml(xml_result, strict=False)
@@ -625,6 +694,18 @@ class BTGenerator:
                         "method_used": "cfg",
                         "success": False,
                         "error": f"Invalid actions: {'; '.join(action_issues)}"
+                    }
+
+                command_valid, command_issues = validate_command_semantics(xml_result, command)
+                if not command_valid:
+                    logger.warning(f"Command semantics invalid: {'; '.join(command_issues)}")
+                    gen_time_ms = int((time.time() - start_time) * 1000)
+                    return {
+                        "bt_xml": xml_result,
+                        "generation_time_ms": gen_time_ms,
+                        "method_used": "cfg",
+                        "success": False,
+                        "error": f"Command semantics invalid: {'; '.join(command_issues)}"
                     }
 
                 semantic_valid, semantic_warnings = validate_semantic_structure(xml_result)

@@ -296,6 +296,56 @@ def validate_semantic_structure(xml_string: str) -> Tuple[bool, list]:
         return True, [f"Error checking semantics: {str(e)}"]
 
 
+def validate_command_semantics(xml_string: str, command: str) -> Tuple[bool, list]:
+    """
+    Validate high-level BT semantics against the original natural language command.
+    This catches simple-command degeneracies such as duplicated PlaceObject or
+    duplicated DetectObject nodes.
+    """
+    issues = []
+    cmd = command.lower()
+
+    is_place_only = (
+        any(token in cmd for token in ["place", "put", "set down", "deposit"]) and
+        not any(token in cmd for token in ["pick up", "pick", "grab", "grasp", "take"])
+    )
+    is_detect_only = (
+        any(token in cmd for token in ["detect", "find", "look for", "search"]) and
+        not any(token in cmd for token in ["place", "put", "set down", "deposit", "pick up", "pick", "grab", "grasp", "take"])
+    )
+
+    if not (is_place_only or is_detect_only):
+        return True, issues
+
+    try:
+        root = ET.fromstring(xml_string)
+
+        action_ids = []
+        for elem in root.iter():
+            if elem.tag == "Action":
+                node_id = elem.get("ID")
+                if node_id:
+                    action_ids.append(node_id)
+
+        if is_place_only:
+            place_count = sum(1 for node_id in action_ids if node_id == "PlaceObject")
+            if place_count == 0:
+                issues.append("Pure place command generated no PlaceObject node")
+            elif place_count > 1:
+                issues.append(f"Pure place command generated {place_count} PlaceObject nodes")
+
+        if is_detect_only:
+            detect_count = sum(1 for node_id in action_ids if node_id == "DetectObject")
+            if detect_count == 0:
+                issues.append("Pure detect command generated no DetectObject node")
+            elif detect_count > 1:
+                issues.append(f"Pure detect command generated {detect_count} DetectObject nodes")
+
+        return len(issues) == 0, issues
+    except Exception as e:
+        return False, [f"Error checking command semantics: {str(e)}"]
+
+
 def validate_blackboard_variables(xml_string: str) -> Tuple[bool, list]:
     """
     Check for consistent use of blackboard variables
