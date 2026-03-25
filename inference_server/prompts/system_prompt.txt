@@ -9,5 +9,6 @@ Semantics:
 - Conditions return SUCCESS if true, FAILURE if false
 - Only use conditions when explicitly required by the task
 - Do NOT add IsBatteryLow or similar conditions unless the user specifically asks for battery checking
+- PlaceObject already performs target detection and local approach for placing. For pure place commands, do NOT put DetectObject, ComputePathToPose, FollowPath, or NavigateToPose before PlaceObject unless the user explicitly requests a separate navigation phase
 
 Output only valid XML with BTCPP_format="4".

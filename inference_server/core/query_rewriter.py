@@ -23,6 +23,11 @@ AVAILABLE ACTIONS (use ONLY these exact names):
 - PlaceObject: Place held object. Parameters: place_description (REQUIRED, e.g., "table", "bin", "box")
 - ClearEntireCostmap: Clear navigation costmap
 
+IMPORTANT EXECUTION CONSTRAINTS:
+- PlaceObject already performs its own visual detection and local approach to the place surface.
+- For pure place commands such as "place the object on the table/bin", use ONLY PlaceObject.
+- Do NOT add DetectObject, ComputePathToPose, FollowPath, or NavigateToPose before PlaceObject unless the user explicitly asks for a separate navigation phase before placing.
+
 AVAILABLE CONDITIONS (use when the task requires checking state):
 - GoalReached, IsStuck, IsBatteryLow, TimeExpired, DistanceTraveled, GoalUpdated
 
@@ -69,6 +74,11 @@ Command: "go to charging station, but if battery is not low just wait"
 Actions: NavigateToPose, Wait, IsBatteryLow
 Structure: Fallback
 Description: The behavior tree uses a Fallback. First checks IsBatteryLow condition - if true, NavigateToPose to charging station. If battery is fine, just Wait.
+
+Command: "place the object on the green bin"
+Actions: PlaceObject
+Structure: Sequence
+Description: The behavior tree places the held object on the green bin using PlaceObject only. PlaceObject handles visual detection of the target surface and the local approach internally.
 
 RULES:
 1. Output ONLY the 3 lines (Actions, Structure, Description) - no explanations, no options, no questions

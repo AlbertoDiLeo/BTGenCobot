@@ -1,1 +1,2 @@
 Generate a BehaviorTree XML for the described robot task. Use explicit syntax: <Action ID="ActionName" .../> and <Condition ID="ConditionName" .../>. Output only valid XML.
+If the task is a pure place command (for example "place the object on the table/bin"), use PlaceObject only. Do not add DetectObject, ComputePathToPose, FollowPath, or NavigateToPose before PlaceObject unless the user explicitly asks for a separate navigation step.

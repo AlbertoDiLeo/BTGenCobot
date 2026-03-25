@@ -37,6 +37,64 @@ def _fix_main_tree_to_execute(xml_string: str) -> str:
         return xml_string
 
 
+def _simplify_place_only_bt(xml_string: str, command: str) -> str:
+    """
+    For pure place commands, remove navigation/detection nodes that appear before
+    PlaceObject. PlaceObject already performs target detection and local approach,
+    while nested Nav2 navigation actions can trigger invalid goal preemption.
+    """
+    cmd = command.lower()
+    is_place_only = (
+        any(token in cmd for token in ["place", "put", "set down", "deposit"]) and
+        not any(token in cmd for token in ["pick up", "pick", "grab", "grasp", "take"])
+    )
+    if not is_place_only:
+        return xml_string
+
+    try:
+        root = ET.fromstring(xml_string)
+        behavior_trees = root.findall("BehaviorTree")
+        if not behavior_trees:
+            return xml_string
+
+        for bt in behavior_trees:
+            if len(bt) != 1:
+                continue
+
+            container = bt[0]
+            if container.tag not in {"Sequence", "ReactiveSequence"}:
+                continue
+
+            children = list(container)
+            has_place = any(
+                child.tag == "Action" and child.get("ID") == "PlaceObject"
+                for child in children
+            )
+            has_pick = any(
+                child.tag == "Action" and child.get("ID") == "PickObject"
+                for child in children
+            )
+            if not has_place or has_pick:
+                continue
+
+            filtered_children = []
+            removed = False
+            for child in children:
+                child_id = child.get("ID") if child.tag == "Action" else None
+                if child_id in {"DetectObject", "ComputePathToPose", "FollowPath", "NavigateToPose"}:
+                    removed = True
+                    continue
+                filtered_children.append(child)
+
+            if removed and filtered_children:
+                container[:] = filtered_children
+                logger.info("Simplified pure place BT by removing navigation/detection nodes before PlaceObject")
+
+        return ET.tostring(root, encoding="unicode", xml_declaration=False)
+    except ET.ParseError:
+        return xml_string
+
+
 def generate_restricted_grammar(allowed_actions: List[str], structure: Optional[str] = None, max_depth: int = 5) -> str:
     """
     Generate a restricted EBNF grammar using EXPLICIT syntax: <Action ID="NodeType" .../>.
@@ -65,6 +123,13 @@ def generate_restricted_grammar(allowed_actions: List[str], structure: Optional[
         "PickObject": ["object_description"],
         "PlaceObject": ["place_description"],
         "ClearEntireCostmap": [],
+    }
+
+    # Ports that must be present for the corresponding action to be executable.
+    REQUIRED_ACTION_PORTS = {
+        "DetectObject": ["object_description"],
+        "PickObject": ["object_description"],
+        "PlaceObject": ["place_description"],
     }
 
     KNOWN_ACTIONS = set(ACTION_PORTS.keys())
@@ -182,8 +247,14 @@ bt_content: node_l1
         rule_name = f'{action.lower()}_action'
         action_alternatives.append(rule_name)
         if ports:
-            # Build optional port attributes (each can appear 0 or 1 time)
-            port_attrs = " ".join([f'{p}_attr?' for p in ports])
+            required_ports = set(REQUIRED_ACTION_PORTS.get(action, []))
+            port_attr_tokens = []
+            for p in ports:
+                if p in required_ports:
+                    port_attr_tokens.append(f'{p}_attr')
+                else:
+                    port_attr_tokens.append(f'{p}_attr?')
+            port_attrs = " ".join(port_attr_tokens)
             grammar += f'{rule_name}: "<Action" " " "ID=\\"{action}\\"" " "? {port_attrs} "/>"\n'
         else:
             grammar += f'{rule_name}: "<Action" " " "ID=\\"{action}\\"" " "? "/>"\n'
@@ -528,6 +599,7 @@ class BTGenerator:
                     logger.info(f"Post-processing applied: {filter_reason}")
                     xml_result = filtered_xml
 
+                xml_result = _simplify_place_only_bt(xml_result, command)
                 xml_result = _fix_main_tree_to_execute(xml_result)
 
                 is_valid, val_error = validate_bt_xml(xml_result, strict=False)

@@ -9,7 +9,7 @@ Actions:
 - NavigateToPose (goal) - navigate directly to goal pose
 - DetectObject (object_description, target_pose) - find object, output pose to {target_pose}. REQUIRED: object_description
 - PickObject (object_description) - pick up object. REQUIRED: object_description
-- PlaceObject (place_description) - place held object. REQUIRED: place_description (e.g., "table", "bin")
+- PlaceObject (place_description) - place held object. REQUIRED: place_description (e.g., "table", "bin"). For pure place commands, use this alone; it already handles target detection and local approach.
 - ClearEntireCostmap - clear navigation costmap
 
 Conditions (use ONLY when explicitly requested by the user - do NOT add unless asked):
