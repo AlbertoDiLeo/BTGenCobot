@@ -1,4 +1,5 @@
 """Configuration for BT Generation Inference Server"""
+import os
 from pathlib import Path
 from pydantic import BaseModel
 
@@ -32,9 +33,14 @@ class ModelConfig(BaseModel):
 class PathConfig(BaseModel):
     """Path configuration"""
     # btgenbot2: Llama-3.2-1B fine-tuned model (better semantic quality, faster)
-    model_dir: Path = Path(__file__).parent.parent.parent / "models/btgenbot2/models/"
+    model_dir: Path = Path(
+        os.getenv(
+            "BTGEN_MODEL_PATH",
+            Path(__file__).parent.parent.parent / "models/btgenbot2/models/",
+        )
+    )
     # No adapter needed - already fine-tuned
-    adapter_dir: Path = None
+    adapter_dir: Path = Path(os.getenv("BTGEN_ADAPTER_PATH")) if os.getenv("BTGEN_ADAPTER_PATH") else None
     prompts_dir: Path = Path(__file__).parent.parent / "prompts"
 
     def __init__(self, **data):
