@@ -14,8 +14,14 @@ def generate_launch_description():
     # Get package directories
     pkg_description = get_package_share_directory('turtlebot3_manipulation_description')
     
-    # Build resource paths for meshes
-    resource_paths = [pkg_description, os.path.dirname(pkg_description)]
+    # Build resource paths for meshes, worlds and external models mounted in the container.
+    resource_paths = [
+        pkg_description,
+        os.path.dirname(pkg_description),
+        '/workspace/worlds',
+        '/workspace/worlds/aws_small_house/models',
+        '/workspace/worlds/aws_small_house/photos',
+    ]
     gz_resource_path = ':'.join(resource_paths)
 
     # Paths
@@ -45,19 +51,19 @@ def generate_launch_description():
 
     declare_world_cmd = DeclareLaunchArgument(
         'world',
-        default_value='/workspace/worlds/indoor_world.sdf',
-        description='Full path to world file to load'
+        default_value='default',
+        description='World selector: default | structured_house | aws_small_house | absolute path to .sdf/.world'
     )
 
     declare_x_pose_cmd = DeclareLaunchArgument(
         'x_pose',
-        default_value='0.0',
+        default_value='0.65',
         description='Initial x position of the robot'
     )
 
     declare_y_pose_cmd = DeclareLaunchArgument(
         'y_pose',
-        default_value='0.0',
+        default_value='-1.15',
         description='Initial y position of the robot'
     )
 
@@ -67,10 +73,21 @@ def generate_launch_description():
         description='Run Gazebo in headless mode (no GUI)'
     )
 
+    resolved_world_file = PythonExpression([
+        "'/workspace/worlds/indoor_world.sdf' if '", world_file_arg,
+        "' == 'default' else '/workspace/worlds/structured_house.sdf' if '", world_file_arg,
+        "' == 'structured_house' else '/workspace/worlds/aws_small_house/world.sdf' if '", world_file_arg,
+        "' == 'aws_small_house' else '", world_file_arg, "'"
+    ])
+
     # Start Gazebo Harmonic - headless or with GUI based on parameter
     env_vars = {
         'GZ_SIM_RESOURCE_PATH': gz_resource_path,
         'IGN_GAZEBO_RESOURCE_PATH': gz_resource_path,
+        'GAZEBO_MODEL_PATH': ':'.join([
+            '/workspace/worlds/aws_small_house/models',
+            '/workspace/worlds/aws_small_house/photos'
+        ]),
         'GZ_SIM_SYSTEM_PLUGIN_PATH': ':'.join([
             '/opt/ros/jazzy/lib',
             '/opt/ros/jazzy/opt/gz_sim_vendor/lib'
@@ -80,7 +97,7 @@ def generate_launch_description():
     # Run headless (no GUI) with -s (server only) flag
     start_gazebo_headless_cmd = ExecuteProcess(
         condition=IfCondition(headless),
-        cmd=['gz', 'sim', '-r', '-s', '-v', '4', world_file_arg],
+        cmd=['gz', 'sim', '-r', '-s', '-v', '4', resolved_world_file],
         output='screen',
         additional_env=env_vars
     )
@@ -88,7 +105,7 @@ def generate_launch_description():
     # Run with GUI (no -s flag)
     start_gazebo_gui_cmd = ExecuteProcess(
         condition=UnlessCondition(headless),
-        cmd=['gz', 'sim', '-r', '-v', '4', world_file_arg],
+        cmd=['gz', 'sim', '-r', '-v', '4', resolved_world_file],
         output='screen',
         additional_env=env_vars
     )
@@ -149,7 +166,13 @@ def generate_launch_description():
             '/imu@sensor_msgs/msg/Imu[gz.msgs.IMU',
             '/camera@sensor_msgs/msg/Image[gz.msgs.Image',
             '/camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
-            '/camera/depth@sensor_msgs/msg/Image[gz.msgs.Image'
+            '/camera/depth@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/fixed_camera/lounge/image@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/fixed_camera/lounge/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+            '/fixed_camera/corridor/image@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/fixed_camera/corridor/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
+            '/fixed_camera/lab/image@sensor_msgs/msg/Image[gz.msgs.Image',
+            '/fixed_camera/lab/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo'
         ],
         output='screen',
         remappings=[

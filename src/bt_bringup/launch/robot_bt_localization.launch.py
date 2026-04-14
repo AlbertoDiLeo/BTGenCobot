@@ -35,8 +35,8 @@ def generate_launch_description():
 
     declare_world_cmd = DeclareLaunchArgument(
         'world',
-        default_value='/workspace/worlds/indoor_world.sdf',
-        description='Full path to world file to load'
+        default_value='default',
+        description='World selector: default | structured_house | aws_small_house | absolute path to .sdf/.world'
     )
 
     declare_map_file_cmd = DeclareLaunchArgument(
