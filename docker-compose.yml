@@ -18,7 +18,6 @@ services:
       - ./src:/workspace/src:cached
       - ./robot_description:/workspace/robot_description:cached
       - ./worlds:/workspace/worlds:cached
-      - ./models:/workspace/models:cached # Mount models as volume instead of copying
       - ./scripts:/workspace/scripts:cached
       # ROS2 build artifacts (use delegated for better performance)
       - ./install:/workspace/install:delegated
