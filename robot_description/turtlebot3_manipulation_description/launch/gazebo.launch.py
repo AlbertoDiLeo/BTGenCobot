@@ -57,13 +57,13 @@ def generate_launch_description():
 
     declare_x_pose_cmd = DeclareLaunchArgument(
         'x_pose',
-        default_value='0.65',
+        default_value='0.35',
         description='Initial x position of the robot'
     )
 
     declare_y_pose_cmd = DeclareLaunchArgument(
         'y_pose',
-        default_value='-1.15',
+        default_value='0.05',
         description='Initial y position of the robot'
     )
 
@@ -131,7 +131,7 @@ def generate_launch_description():
 
     # Spawn robot in Gazebo
     spawn_robot_cmd = TimerAction(
-        period=3.0,
+        period=8.0,
         actions=[
             Node(
                 package='ros_gz_sim',

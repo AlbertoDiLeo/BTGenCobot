@@ -1,10 +1,43 @@
 """ROS2 Action Server for BehaviorTree Generation and Execution"""
+import re
 import time
 import uuid
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+
+CURATED_ROOM_ROUTES = {
+    "living room": [
+        {"x": 0.35, "y": 0.05, "frame_id": "map"},
+    ],
+    "kitchen": [
+        {"x": 1.7, "y": 0.05, "frame_id": "map"},
+        {"x": 3.35, "y": 0.0, "frame_id": "map"},
+        {"x": 4.85, "y": -0.05, "frame_id": "map"},
+    ],
+    "bedroom": [
+        {"x": -1.95, "y": 0.16, "frame_id": "map"},
+        {"x": -3.35, "y": 0.48, "frame_id": "map"},
+        {"x": -4.55, "y": 0.85, "frame_id": "map"},
+    ],
+    "charging station": [
+        {"x": 0.35, "y": 0.05, "frame_id": "map"},
+    ],
+}
+
+ROOM_ALIASES = {
+    "living room": "living room",
+    "living-room": "living room",
+    "lounge": "living room",
+    "kitchen": "kitchen",
+    "bedroom": "bedroom",
+    "charging station": "charging station",
+    "charging-station": "charging station",
+    "dock": "charging station",
+    "docking area": "charging station",
+}
 
 import requests
 import rclpy
@@ -198,7 +231,55 @@ class BTInterfaceNode(Node):
 
         return result
 
+    def _normalize_room_label(self, room_label: str) -> str:
+        normalized = re.sub(r'\s+', ' ', room_label.strip().lower())
+        return ROOM_ALIASES.get(normalized, normalized)
+
+    def _extract_curated_room(self, command: str) -> Optional[str]:
+        normalized_command = re.sub(r'\s+', ' ', command.strip().lower())
+        match = re.search(r'\bgo to(?: the)? ([a-z\- ]+?)(?: and | then |$)', normalized_command)
+        if not match:
+            return None
+        return self._normalize_room_label(match.group(1))
+
+    def _pose_to_bt_string(self, pose: dict) -> str:
+        return f'0;{pose["frame_id"]};{pose["x"]};{pose["y"]};0;0;0;0;1'
+
+    def _build_curated_room_bt(self, room_name: str, command: str) -> str:
+        route = CURATED_ROOM_ROUTES[room_name]
+        include_wait = 'wait for further instructions' in command.lower()
+
+        sequence_lines = ['      <Sequence name="RoomNavigation">']
+        for index, pose in enumerate(route, start=1):
+            pose_value = self._pose_to_bt_string(pose)
+            path_key = f'{{path_{index}}}'
+            sequence_lines.append(
+                f'        <ComputePathToPose goal="{pose_value}" path="{path_key}" planner_id="GridBased"/>'
+            )
+            sequence_lines.append(
+                f'        <FollowPath path="{path_key}" controller_id="FollowPath"/>'
+            )
+
+        if include_wait:
+            sequence_lines.append('        <Wait wait_duration="3.0"/>')
+
+        sequence_lines.append('      </Sequence>')
+
+        xml_lines = [
+            '<root BTCPP_format="4" main_tree_to_execute="MainTree">',
+            '  <BehaviorTree ID="MainTree">',
+            *sequence_lines,
+            '  </BehaviorTree>',
+            '</root>',
+        ]
+        return '\n'.join(xml_lines)
+
     async def generate_bt_from_command(self, command: str) -> tuple[Optional[str], Optional[str]]:
+        curated_room = self._extract_curated_room(command)
+        if curated_room in CURATED_ROOM_ROUTES:
+            self.get_logger().info(f'Using curated room navigation BT for: {curated_room}')
+            return self._build_curated_room_bt(curated_room, command), None
+
         try:
             response = requests.post(
                 f'{self.inference_url}/generate_bt',
