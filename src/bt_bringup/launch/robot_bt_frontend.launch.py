@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Frontend-safe launch for the AWS small house world.
-Starts only the simulation, mapping, navigation and Foxglove bridge pieces
-needed by the frontend, avoiding the heavier application services.
+Frontend launch for the AWS small house world.
+Starts the simulation, mapping, navigation, BT text interface, perception,
+manipulation services, and Foxglove bridge needed by the frontend.
 """
 
 import os
@@ -141,6 +141,40 @@ def generate_launch_description():
         ]
     )
 
+    florence2_service = TimerAction(
+        period=18.0,
+        actions=[
+            Node(
+                package='vision_services',
+                executable='florence2_service',
+                name='florence2_service',
+                parameters=[{
+                    'use_sim_time': use_sim_time,
+                    'use_mock': False,
+                    'florence2_model': 'microsoft/Florence-2-base',
+                    'device': 'auto',
+                    'publish_debug_images': True,
+                }],
+                output='screen',
+            )
+        ]
+    )
+
+    manipulator_service = TimerAction(
+        period=18.0,
+        actions=[
+            Node(
+                package='manipulator_control',
+                executable='manipulator_service',
+                name='manipulator_service',
+                parameters=[{
+                    'use_sim_time': use_sim_time,
+                }],
+                output='screen',
+            )
+        ]
+    )
+
     foxglove_bridge = Node(
         package='foxglove_bridge',
         executable='foxglove_bridge',
@@ -174,5 +208,7 @@ def generate_launch_description():
     ld.add_action(slam_launch)
     ld.add_action(nav2_launch)
     ld.add_action(bt_interface_node)
+    ld.add_action(florence2_service)
+    ld.add_action(manipulator_service)
     ld.add_action(foxglove_bridge)
     return ld

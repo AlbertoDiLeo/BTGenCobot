@@ -49,6 +49,7 @@ from rclpy.qos import QoSProfile, DurabilityPolicy, HistoryPolicy, ReliabilityPo
 
 from btgencobot_interfaces.action import GenerateAndExecuteBT
 from nav2_msgs.action import NavigateToPose
+from geometry_msgs.msg import Twist
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
@@ -104,6 +105,9 @@ class BTInterfaceNode(Node):
             depth=1
         )
         self._bt_xml_publisher = self.create_publisher(String, '/generated_behavior_tree', qos_latched)
+        self._cmd_vel_nav_publisher = self.create_publisher(Twist, '/cmd_vel_nav', 10)
+        self._cmd_vel_smoothed_publisher = self.create_publisher(Twist, '/cmd_vel_smoothed', 10)
+        self._cmd_vel_publisher = self.create_publisher(Twist, '/cmd_vel', 10)
 
         self.bt_republish_timer = self.create_timer(2.0, self._republish_last_bt)
 
@@ -407,16 +411,23 @@ class BTInterfaceNode(Node):
 
         if command.upper() in ["STOP", "STOP_EXECUTION"]:
             self.get_logger().warn("Ricevuto STOP dal frontend. Interrompo il task.")
-            if self.is_executing and self.active_client_goal_handle:
-                self.active_client_goal_handle.cancel_goal_async()
-                self.active_client_goal_handle = None
+            self._cancel_active_execution()
+            if self.current_goal_handle:
+                self.current_goal_handle.abort()
+                self.current_goal_handle = None
+            self._publish_zero_velocity()
+            self.is_executing = False
             return
 
         if self.is_executing:
             self.get_logger().warn('Un task è già in esecuzione. Lo cancello per applicare la correzione...')
-            if self.active_client_goal_handle:
-                self.active_client_goal_handle.cancel_goal_async()
-                self.active_client_goal_handle = None
+            self._cancel_active_execution()
+            if self.current_goal_handle:
+                self.current_goal_handle.abort()
+                self.current_goal_handle = None
+            self._publish_zero_velocity()
+            self.is_executing = False
+            time.sleep(0.2)
 
         goal_msg = GenerateAndExecuteBT.Goal(command=command)
         if self._self_client.wait_for_server(timeout_sec=2.0):
@@ -436,13 +447,40 @@ class BTInterfaceNode(Node):
             response.success, response.message = True, 'No active BT execution to stop'
             return response
         try:
-            if self.current_nav_goal_handle: self.current_nav_goal_handle.cancel_goal_async()
-            if self.current_goal_handle: self.current_goal_handle.abort()
+            self._cancel_active_execution()
+            if self.current_goal_handle:
+                self.current_goal_handle.abort()
+                self.current_goal_handle = None
+            self._publish_zero_velocity()
             self.is_executing = False
             response.success, response.message = True, 'BT execution aborted successfully'
         except Exception as e:
             response.success, response.message = False, f'Emergency stop failed: {str(e)}'
         return response
+
+    def _publish_zero_velocity(self):
+        stop_msg = Twist()
+        for _ in range(10):
+            self._cmd_vel_nav_publisher.publish(stop_msg)
+            self._cmd_vel_smoothed_publisher.publish(stop_msg)
+            self._cmd_vel_publisher.publish(stop_msg)
+            time.sleep(0.05)
+
+    def _cancel_active_execution(self):
+        cancel_futures = []
+
+        if self.current_nav_goal_handle:
+            cancel_futures.append(self.current_nav_goal_handle.cancel_goal_async())
+            self.current_nav_goal_handle = None
+
+        if self.active_client_goal_handle:
+            cancel_futures.append(self.active_client_goal_handle.cancel_goal_async())
+            self.active_client_goal_handle = None
+
+        for future in cancel_futures:
+            start_wait = time.time()
+            while not future.done() and (time.time() - start_wait) < 0.5:
+                time.sleep(0.05)
 
     def _republish_last_bt(self):
         if self.last_bt_xml:

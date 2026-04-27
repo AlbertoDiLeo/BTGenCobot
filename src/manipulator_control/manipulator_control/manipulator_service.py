@@ -547,6 +547,18 @@ class ManipulatorService(Node):
 
         return self._send_arm_trajectory(clamped, duration)
 
+    def _arm_is_near_positions(self, target_positions: list, tolerance: float = 0.08) -> bool:
+        """Check whether current arm joint states are close to the requested target."""
+        if not self.joint_state_received:
+            return False
+
+        for joint_name, target in zip(self.ARM_JOINTS, target_positions):
+            current = self.current_joint_positions.get(joint_name)
+            if current is None or abs(current - target) > tolerance:
+                return False
+
+        return True
+
     def _send_arm_trajectory(self, positions: list, duration: float) -> bool:
         """Send trajectory goal to arm controller."""
         if not self.arm_action_client.server_is_ready():
@@ -576,9 +588,9 @@ class ManipulatorService(Node):
         
         # Poll for goal acceptance
         timeout = 5.0
-        start_time = time.time()
+        start_time = time.monotonic()
         while not future.done():
-            if time.time() - start_time > timeout:
+            if time.monotonic() - start_time > timeout:
                 self.get_logger().error('Failed to send arm goal (timeout)')
                 return False
             time.sleep(0.05)
@@ -591,12 +603,33 @@ class ManipulatorService(Node):
         # Wait for result using polling
         # Use generous timeout since simulation may run slower than real-time
         result_future = goal_handle.get_result_async()
-        timeout = duration * 5 + 10.0  # 5x duration + 10s margin for slow simulation
-        start_time = time.time()
+        timeout = duration * 8 + 20.0  # More margin for slow startup / controller lag in Gazebo
+        grace_timeout = 5.0
+        start_time = time.monotonic()
+        used_grace_period = False
         while not result_future.done():
-            if time.time() - start_time > timeout:
-                self.get_logger().error('Arm trajectory timed out')
-                return False
+            elapsed = time.monotonic() - start_time
+            if elapsed > timeout:
+                if self._arm_is_near_positions(positions):
+                    if not used_grace_period:
+                        used_grace_period = True
+                        timeout += grace_timeout
+                        self.get_logger().warn(
+                            'Arm trajectory reached timeout but joints are near target; '
+                            f'waiting an extra {grace_timeout:.1f}s for controller result'
+                        )
+                    elif elapsed > timeout:
+                        self.get_logger().warn(
+                            'Arm trajectory result is late, but joints are already at target; '
+                            'accepting motion as successful'
+                        )
+                        return True
+                else:
+                    self.get_logger().error(
+                        f'Arm trajectory timed out after {elapsed:.1f}s '
+                        f'(limit {timeout:.1f}s)'
+                    )
+                    return False
             time.sleep(0.1)
 
         result = result_future.result()
