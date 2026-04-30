@@ -559,6 +559,13 @@ class ManipulatorService(Node):
 
         return True
 
+    def _get_gripper_position(self):
+        """Return the current simulated gripper joint position when available."""
+        if not self.joint_state_received:
+            return None
+
+        return self.current_joint_positions.get('gripper_left_joint')
+
     def _send_arm_trajectory(self, positions: list, duration: float) -> bool:
         """Send trajectory goal to arm controller."""
         if not self.arm_action_client.server_is_ready():
@@ -663,6 +670,7 @@ class ManipulatorService(Node):
 
         # Clamp gripper position
         position = max(self.GRIPPER_CLOSED, min(self.GRIPPER_OPEN, position))
+        initial_position = self._get_gripper_position()
 
         # Create GripperCommand goal
         goal = GripperCommand.Goal()
@@ -698,9 +706,64 @@ class ManipulatorService(Node):
         result_future = goal_handle.get_result_async()
         base_timeout = 20.0 if force_grasp else 10.0  # Force grasp needs more time
         timeout = duration * 5 + base_timeout
-        start_time = time.time()
+        start_time = time.monotonic()
+        last_joint_position = initial_position
+        last_joint_change_time = start_time
         while not result_future.done():
-            if time.time() - start_time > timeout:
+            now = time.monotonic()
+            current_position = self._get_gripper_position()
+
+            if (
+                current_position is not None and
+                last_joint_position is not None and
+                abs(current_position - last_joint_position) > 0.0005
+            ):
+                last_joint_position = current_position
+                last_joint_change_time = now
+
+            if now - start_time > timeout:
+                current_position = self._get_gripper_position()
+                if current_position is not None:
+                    near_target = abs(current_position - position) <= 0.008
+
+                    if force_grasp and initial_position is not None:
+                        made_closing_progress = current_position < initial_position - 0.004
+                        stalled_after_progress = (
+                            made_closing_progress and
+                            now - last_joint_change_time >= 1.5
+                        )
+                        if near_target or stalled_after_progress:
+                            self.get_logger().warn(
+                                'Gripper action timed out, but joint state indicates a likely '
+                                f'grasp/closure (current={current_position:.4f}, '
+                                f'target={position:.4f}, initial={initial_position:.4f}); '
+                                'accepting as success'
+                            )
+                            return True
+
+                    if not force_grasp and near_target:
+                        self.get_logger().warn(
+                            'Gripper action timed out, but joint state is already near target '
+                            f'(current={current_position:.4f}, target={position:.4f}); '
+                            'accepting as success'
+                        )
+                        return True
+
+                    if not force_grasp and initial_position is not None:
+                        made_opening_progress = current_position > initial_position + 0.004
+                        stalled_after_progress = (
+                            made_opening_progress and
+                            now - last_joint_change_time >= 1.5
+                        )
+                        if stalled_after_progress:
+                            self.get_logger().warn(
+                                'Gripper action timed out, but joint state indicates a likely '
+                                f'completed opening (current={current_position:.4f}, '
+                                f'target={position:.4f}, initial={initial_position:.4f}); '
+                                'accepting as success'
+                            )
+                            return True
+
                 self.get_logger().error(f'Gripper command timed out after {timeout:.1f}s')
                 return False
             time.sleep(0.1)
