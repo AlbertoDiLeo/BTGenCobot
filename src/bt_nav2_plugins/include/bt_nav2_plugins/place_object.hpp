@@ -106,6 +106,7 @@ private:
     DETECTING,
     APPROACHING,  // Final approach using direct cmd_vel
     PLACING,
+    RETREATING,
     DONE
   };
   PlaceState state_;
@@ -125,13 +126,20 @@ private:
 
   // Timing
   rclcpp::Time operation_start_time_;
+  rclcpp::Time retreat_start_time_;
 
   // Final approach - direct motion control bypassing Nav2 costmap
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
   float detected_depth_;  // Place location depth from detection
   rclcpp::Time approach_start_time_;
   bool approach_done_;  // Flag to prevent infinite approach loops
+  bool retreat_started_;
+  double retreat_start_x_;
+  double retreat_start_y_;
   static constexpr double APPROACH_VELOCITY = 0.08;  // m/s - slow for safety
+  static constexpr double RETREAT_VELOCITY = -0.08;  // m/s - back away after place
+  static constexpr double RETREAT_DISTANCE = 0.25;  // Less than pick: object has been released
+  static constexpr double MAX_RETREAT_TIME = 5.0;  // seconds
   // Distance from robot base_link to place location for arm to reach
   // Arm reaches ~0.286m from link1, which is at -0.092m from base_link
   // So arm can reach ~0.19m in front of base_link

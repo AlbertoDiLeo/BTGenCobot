@@ -23,7 +23,12 @@ PickObject::PickObject(
   pick_sent_(false),
   pick_received_(false),
   object_height_(0.1),
-  object_width_(0.05)
+  object_width_(0.05),
+  detected_depth_(0.0f),
+  approach_done_(false),
+  retreat_started_(false),
+  retreat_start_x_(0.0),
+  retreat_start_y_(0.0)
 {
   // Get ROS node from config (Nav2's node - used for logging)
   if (!config.blackboard->get("node", node_) || !node_) {
@@ -101,6 +106,9 @@ BT::NodeStatus PickObject::onStart()
   has_camera_info_ = false;
   detected_depth_ = 0.0f;
   approach_done_ = false;
+  retreat_started_ = false;
+  retreat_start_x_ = 0.0;
+  retreat_start_y_ = 0.0;
 
   operation_start_time_ = node_->now();
 
@@ -467,9 +475,13 @@ BT::NodeStatus PickObject::onRunning()
       }
 
       if (pick_response_->success) {
-        RCLCPP_INFO(node_->get_logger(), "PickObject: Pick operation completed successfully");
-        state_ = PickState::DONE;
-        return BT::NodeStatus::SUCCESS;
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "PickObject: Pick operation completed successfully, starting safety retreat");
+        state_ = PickState::RETREATING;
+        retreat_start_time_ = node_->now();
+        retreat_started_ = false;
+        return BT::NodeStatus::RUNNING;
       } else {
         RCLCPP_ERROR(
           node_->get_logger(),
@@ -477,6 +489,75 @@ BT::NodeStatus PickObject::onRunning()
           pick_response_->error_message.c_str());
         return BT::NodeStatus::FAILURE;
       }
+    }
+
+    case PickState::RETREATING:
+    {
+      geometry_msgs::msg::TransformStamped robot_transform;
+      bool have_pose = false;
+
+      try {
+        robot_transform = tf_buffer_->lookupTransform("map", "base_link", tf2::TimePointZero);
+        have_pose = true;
+      } catch (const tf2::TransformException & ex) {
+        RCLCPP_WARN_THROTTLE(
+          node_->get_logger(),
+          *node_->get_clock(),
+          1000,
+          "PickObject: Could not get robot pose during retreat: %s",
+          ex.what());
+      }
+
+      if (have_pose && !retreat_started_) {
+        retreat_start_x_ = robot_transform.transform.translation.x;
+        retreat_start_y_ = robot_transform.transform.translation.y;
+        retreat_started_ = true;
+      }
+
+      const double elapsed = (node_->now() - retreat_start_time_).seconds();
+      double retreated_distance = 0.0;
+
+      if (have_pose && retreat_started_) {
+        const double dx = robot_transform.transform.translation.x - retreat_start_x_;
+        const double dy = robot_transform.transform.translation.y - retreat_start_y_;
+        retreated_distance = std::sqrt(dx * dx + dy * dy);
+      }
+
+      if ((retreat_started_ && retreated_distance >= RETREAT_DISTANCE) ||
+        elapsed >= MAX_RETREAT_TIME)
+      {
+        geometry_msgs::msg::Twist stop_msg;
+        cmd_vel_pub_->publish(stop_msg);
+
+        if (retreat_started_ && retreated_distance >= RETREAT_DISTANCE) {
+          RCLCPP_INFO(
+            node_->get_logger(),
+            "PickObject: Safety retreat complete after %.2fm",
+            retreated_distance);
+        } else {
+          RCLCPP_WARN(
+            node_->get_logger(),
+            "PickObject: Safety retreat timed out after %.1fs, continuing",
+            elapsed);
+        }
+
+        state_ = PickState::DONE;
+        return BT::NodeStatus::SUCCESS;
+      }
+
+      geometry_msgs::msg::Twist cmd_vel;
+      cmd_vel.linear.x = RETREAT_VELOCITY;
+      cmd_vel_pub_->publish(cmd_vel);
+
+      RCLCPP_INFO_THROTTLE(
+        node_->get_logger(),
+        *node_->get_clock(),
+        1000,
+        "PickObject: Retreating from table... %.2fm / %.2fm",
+        retreated_distance,
+        RETREAT_DISTANCE);
+
+      return BT::NodeStatus::RUNNING;
     }
 
     case PickState::DONE:
@@ -491,7 +572,7 @@ void PickObject::onHalted()
   RCLCPP_INFO(node_->get_logger(), "PickObject: Halted");
 
   // Stop the robot if we were approaching
-  if (state_ == PickState::APPROACHING) {
+  if (state_ == PickState::APPROACHING || state_ == PickState::RETREATING) {
     geometry_msgs::msg::Twist stop_msg;
     cmd_vel_pub_->publish(stop_msg);
   }
@@ -503,6 +584,7 @@ void PickObject::onHalted()
   pick_sent_ = false;
   pick_received_ = false;
   pick_response_.reset();
+  retreat_started_ = false;
 }
 
 void PickObject::imageCallback(const sensor_msgs::msg::Image::SharedPtr msg)
