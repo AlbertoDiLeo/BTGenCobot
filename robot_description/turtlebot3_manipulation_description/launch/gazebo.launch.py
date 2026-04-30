@@ -35,6 +35,7 @@ def generate_launch_description():
     x_pose = LaunchConfiguration('x_pose')
     y_pose = LaunchConfiguration('y_pose')
     headless = LaunchConfiguration('headless')
+    spawn_delay = LaunchConfiguration('spawn_delay')
 
     # Declare launch arguments
     declare_use_sim_time_cmd = DeclareLaunchArgument(
@@ -71,6 +72,12 @@ def generate_launch_description():
         'headless',
         default_value='true',
         description='Run Gazebo in headless mode (no GUI)'
+    )
+
+    declare_spawn_delay_cmd = DeclareLaunchArgument(
+        'spawn_delay',
+        default_value='14.0',
+        description='Delay before spawning the robot into Gazebo. A larger value reduces GUI/world-load race conditions in heavy scenes.'
     )
 
     resolved_world_file = PythonExpression([
@@ -131,7 +138,7 @@ def generate_launch_description():
 
     # Spawn robot in Gazebo
     spawn_robot_cmd = TimerAction(
-        period=8.0,
+        period=spawn_delay,
         actions=[
             Node(
                 package='ros_gz_sim',
@@ -309,6 +316,7 @@ def generate_launch_description():
     ld.add_action(declare_x_pose_cmd)
     ld.add_action(declare_y_pose_cmd)
     ld.add_action(declare_headless_cmd)
+    ld.add_action(declare_spawn_delay_cmd)
 
     # Add nodes
     ld.add_action(start_gazebo_headless_cmd)
