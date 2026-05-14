@@ -18,6 +18,7 @@ services:
       - ./src:/workspace/src:cached
       - ./robot_description:/workspace/robot_description:cached
       - ./worlds:/workspace/worlds:cached
+      - ./maps:/workspace/maps:cached
       - ./scripts:/workspace/scripts:cached
       # ROS2 build artifacts (use delegated for better performance)
       - ./install:/workspace/install:delegated

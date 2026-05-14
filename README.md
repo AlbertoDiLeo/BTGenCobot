@@ -33,6 +33,38 @@ cd inference_server && uv run serve
 ros2 topic pub /btgen_nl_command std_msgs/String "data: 'pick up the red cup'"
 ```
 
+## Saved-Map Navigation Runtime
+
+For the frontend thesis workflow, room-based navigation should use a saved
+metric map, not online SLAM as the operational assumption.
+
+Preliminary mapping phase:
+
+```bash
+ros2 launch bt_bringup robot_bt_frontend.launch.py \
+  world:=aws_small_house \
+  use_rviz:=true \
+  headless:=false
+
+ros2 run nav2_map_server map_saver_cli -f /workspace/maps/aws_small_house
+```
+
+Operational phase:
+
+```bash
+ros2 launch bt_bringup robot_bt_localization.launch.py \
+  world:=aws_small_house \
+  map_file:=/workspace/maps/aws_small_house.yaml
+```
+
+In the operational phase `map_server` publishes `/map`, AMCL localizes the
+robot on that saved map, and Nav2 receives goals in the `map` frame. The
+frontend semantic map and topology map should be aligned to this saved metric
+map.
+
+The Docker compose setup mounts `BTGenCobot/maps/` as `/workspace/maps/`, so
+saved maps persist across container recreation.
+
 ## Architecture
 
 ```
