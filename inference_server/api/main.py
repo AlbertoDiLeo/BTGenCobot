@@ -1,4 +1,5 @@
 """FastAPI Server for BehaviorTree Generation"""
+import json
 import logging
 import time
 from pathlib import Path
@@ -89,6 +90,7 @@ class GenerateBTRequest(BaseModel):
     temperature: float = Field(0.6, description="Sampling temperature", ge=0.0, le=2.0)
     prompt_format: str = Field("chat", description="Prompt format: 'chat' (Llama chat) or 'alpaca' (instruction format)")
     use_query_rewriting: bool = Field(True, description="Whether to use LLM query rewriting to expand command")
+    rewritten_input: str | None = Field(None, description="Optional pre-resolved structured input for grammar restriction")
     custom_instruction: str | None = Field(None, description="Optional custom instruction to override default alpaca_instruction.txt")
 
     class Config:
@@ -145,11 +147,42 @@ class EmergencyStopResponse(BaseModel):
     message: str = Field(..., description="Status message")
 
 
+class SemanticNavigationWaypoint(BaseModel):
+    """Metric waypoint already resolved by the external/topological planner."""
+    x: float = Field(..., description="Waypoint x coordinate in the map frame")
+    y: float = Field(..., description="Waypoint y coordinate in the map frame")
+    frame_id: str = Field("map", description="Reference frame for the waypoint")
+    yaw_rad: Optional[float] = Field(None, description="Optional target yaw in radians")
+
+
+class SemanticNavigationRequest(BaseModel):
+    """Resolved semantic navigation request produced outside the backend."""
+    destination_id: str = Field(..., description="Semantic destination identifier")
+    destination_label: str = Field(..., description="Human-readable destination label")
+    start_node_id: str = Field(..., description="Current/topological start node")
+    target_node_id: str = Field(..., description="Target/topological destination node")
+    topological_path: list[str] = Field(
+        ...,
+        description="Ordered topology nodes returned by the route planner",
+        min_length=1,
+    )
+    waypoints: list[SemanticNavigationWaypoint] = Field(
+        ...,
+        description="Metric waypoints returned by the route planner",
+        min_length=1,
+    )
+    planner: str = Field("topology-bfs", description="Planner/source that produced the route")
+
+
 class ExecuteCommandRequest(BaseModel):
     """Request model for /execute — generate BT and send command to robot"""
-    command: str = Field(..., description="Natural language command", min_length=1)
+    command: str = Field("", description="Natural language command")
     temperature: float = Field(0.1, description="Sampling temperature", ge=0.0, le=2.0)
     foxglove_ws_url: str = Field("ws://localhost:8765", description="Foxglove Bridge WebSocket URL")
+    semantic_navigation: Optional[SemanticNavigationRequest] = Field(
+        None,
+        description="Resolved room-navigation request. If present, /execute forwards it to the ROS backend as structured JSON.",
+    )
 
 
 class ExecuteCommandResponse(BaseModel):
@@ -159,6 +192,32 @@ class ExecuteCommandResponse(BaseModel):
     generation_time_ms: int = Field(..., description="Generation time in milliseconds")
     ros_command_sent: bool = Field(..., description="Whether the command was forwarded to ROS2")
     error: Optional[str] = Field(None, description="Error message if generation failed")
+    request_type: str = Field("natural_language", description="Request type handled by /execute")
+
+
+def _model_to_dict(model: BaseModel) -> dict:
+    """Return a Pydantic model as a plain dict across Pydantic v1/v2."""
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    return model.dict()
+
+
+def build_semantic_navigation_ros_command(request: ExecuteCommandRequest) -> str:
+    """Build the JSON envelope consumed by bt_interface_node for semantic navigation."""
+    if request.semantic_navigation is None:
+        raise ValueError("Missing semantic navigation request")
+
+    semantic_navigation = _model_to_dict(request.semantic_navigation)
+    command = request.command.strip()
+    if not command:
+        command = f"go to the {request.semantic_navigation.destination_label}"
+
+    return json.dumps({
+        "type": "semantic_navigation",
+        "version": 1,
+        "command": command,
+        "semantic_navigation": semantic_navigation,
+    })
 
 
 @app.get("/", response_model=dict)
@@ -218,9 +277,15 @@ async def generate_bt(request: GenerateBTRequest):
     try:
         start_time = time.time()
 
-        # Apply query rewriting if requested
-        rewritten_input = None
-        if request.use_query_rewriting:
+        # Apply query rewriting if requested, unless the caller already provides
+        # resolved structured input.
+        rewritten_input = request.rewritten_input
+        if rewritten_input:
+            logger.info("=" * 80)
+            logger.info("CALLER-PROVIDED REWRITTEN INPUT:")
+            logger.info(rewritten_input)
+            logger.info("=" * 80)
+        elif request.use_query_rewriting:
             from core.query_rewriter import rewrite_command
             logger.info("Applying query rewriting...")
             rewritten_input = rewrite_command(request.command)
@@ -272,24 +337,63 @@ async def execute_command(request: ExecuteCommandRequest):
     Generate BehaviorTree from natural language and send the command to the robot.
 
     This is the main endpoint for the frontend:
-    1. Generates the BT XML (with query rewriting via Claude/OpenRouter)
-    2. Publishes the command to ROS2 /btgen_nl_command via Foxglove WebSocket Bridge
-    3. Returns the generated XML so the frontend can render it immediately
+    1. For normal commands, generates a BT preview and forwards the command to ROS2.
+    2. For semantic navigation, forwards the resolved route as structured JSON.
 
-    The robot (inside the Docker container) receives the command, re-generates the BT
-    and executes it via Nav2. Real-time execution status is available via Foxglove WS
-    topics: /generated_behavior_tree and /behavior_tree_log.
+    The robot-side bt_interface_node owns final BT generation/execution and publishes
+    /generated_behavior_tree plus /behavior_tree_log for frontend supervision.
     """
     state.total_requests += 1
 
-    if not state.model_loaded or state.generator is None:
-        state.failed_requests += 1
-        raise HTTPException(status_code=503, detail="Model not loaded.")
-
     logger.info("=" * 80)
-    logger.info(f"/execute request — Command: {request.command!r}")
+    logger.info(f"/execute request — Command: {request.command!r}, semantic_navigation={request.semantic_navigation is not None}")
 
     try:
+        if request.semantic_navigation is not None:
+            from core.ros_bridge import publish_nl_command
+
+            ros_command = build_semantic_navigation_ros_command(request)
+            semantic = request.semantic_navigation
+            logger.info(
+                "Forwarding semantic navigation request to ROS2: "
+                f"{semantic.start_node_id} -> {semantic.target_node_id} "
+                f"({len(semantic.waypoints)} waypoint(s), planner={semantic.planner})"
+            )
+
+            ros_sent = await publish_nl_command(ros_command, ws_url=request.foxglove_ws_url)
+            if ros_sent:
+                state.successful_requests += 1
+                logger.info("Semantic navigation request forwarded to ROS2 successfully")
+            else:
+                state.failed_requests += 1
+                logger.warning("Could not forward semantic navigation request to ROS2")
+
+            logger.info("=" * 80)
+
+            return ExecuteCommandResponse(
+                success=ros_sent,
+                bt_xml=None,
+                generation_time_ms=0,
+                ros_command_sent=ros_sent,
+                error=None if ros_sent else "Could not forward semantic navigation request to ROS2",
+                request_type="semantic_navigation",
+            )
+
+        if not request.command.strip():
+            state.failed_requests += 1
+            return ExecuteCommandResponse(
+                success=False,
+                bt_xml=None,
+                generation_time_ms=0,
+                ros_command_sent=False,
+                error="Missing command for natural-language execution request",
+                request_type="natural_language",
+            )
+
+        if not state.model_loaded or state.generator is None:
+            state.failed_requests += 1
+            raise HTTPException(status_code=503, detail="Model not loaded.")
+
         start_time = time.time()
 
         # 1. Rewrite the command
@@ -315,6 +419,7 @@ async def execute_command(request: ExecuteCommandRequest):
                 generation_time_ms=result.get("generation_time_ms", 0),
                 ros_command_sent=False,
                 error=result.get("error"),
+                request_type="natural_language",
             )
 
         state.successful_requests += 1
@@ -335,6 +440,7 @@ async def execute_command(request: ExecuteCommandRequest):
             bt_xml=result["bt_xml"],
             generation_time_ms=result["generation_time_ms"],
             ros_command_sent=ros_sent,
+            request_type="natural_language",
         )
 
     except Exception as e:
