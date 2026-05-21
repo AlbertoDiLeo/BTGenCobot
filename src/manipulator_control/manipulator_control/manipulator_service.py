@@ -566,6 +566,16 @@ class ManipulatorService(Node):
 
         return self.current_joint_positions.get('gripper_left_joint')
 
+    def _wait_for_gripper_position(self, timeout_sec: float = 2.0):
+        """Wait briefly for gripper joint state data before commanding the controller."""
+        start_time = time.monotonic()
+        while time.monotonic() - start_time <= timeout_sec:
+            current_position = self._get_gripper_position()
+            if current_position is not None:
+                return current_position
+            time.sleep(0.05)
+        return None
+
     def _send_arm_trajectory(self, positions: list, duration: float) -> bool:
         """Send trajectory goal to arm controller."""
         if not self.arm_action_client.server_is_ready():
@@ -670,7 +680,14 @@ class ManipulatorService(Node):
 
         # Clamp gripper position
         position = max(self.GRIPPER_CLOSED, min(self.GRIPPER_OPEN, position))
-        initial_position = self._get_gripper_position()
+        initial_position = self._wait_for_gripper_position()
+        action_name = 'open' if position > 0 else 'close'
+        if initial_position is not None and abs(initial_position - position) <= 0.008:
+            self.get_logger().info(
+                f'Gripper {action_name} skipped: joint state already near target '
+                f'(current={initial_position:.4f}, target={position:.4f})'
+            )
+            return True
 
         # Create GripperCommand goal
         goal = GripperCommand.Goal()
@@ -679,7 +696,6 @@ class ManipulatorService(Node):
         goal.command.max_effort = 20.0 if force_grasp else 10.0
 
         # Send goal and wait using polling
-        action_name = 'open' if position > 0 else 'close'
         self.get_logger().info(
             f'Gripper {action_name}: {position} '
             f'(force_grasp={force_grasp}, max_effort={goal.command.max_effort})'

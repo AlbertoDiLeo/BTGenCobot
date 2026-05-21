@@ -143,8 +143,10 @@ private:
   // Distance from robot base_link to place location for arm to reach
   // Arm reaches ~0.286m from link1, which is at -0.092m from base_link
   // So arm can reach ~0.19m in front of base_link
-  // Stop a bit further back to avoid collision and give arm room to maneuver
-  static constexpr double MIN_APPROACH_DISTANCE = 0.22;  // Stop 22cm from target
+  // Stop close enough for the arm to release into the target container, while
+  // keeping a small collision margin from the detected front surface.
+  static constexpr double MIN_APPROACH_DISTANCE = 0.12;  // Stop 12cm from target
+  static constexpr double PLACE_FORWARD_BIAS_METERS = 0.06;  // Place slightly past the front edge
 };
 
 }  // namespace bt_nav2_plugins

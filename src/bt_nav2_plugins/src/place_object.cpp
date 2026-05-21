@@ -645,6 +645,12 @@ geometry_msgs::msg::PoseStamped PlaceObject::computePlacePose(
       double dx = pose_map.pose.position.x - robot_transform.transform.translation.x;
       double dy = pose_map.pose.position.y - robot_transform.transform.translation.y;
       double yaw = std::atan2(dy, dx);
+
+      const double distance_to_target = std::sqrt(dx * dx + dy * dy);
+      if (distance_to_target > 1e-3) {
+        pose_map.pose.position.x += (dx / distance_to_target) * PLACE_FORWARD_BIAS_METERS;
+        pose_map.pose.position.y += (dy / distance_to_target) * PLACE_FORWARD_BIAS_METERS;
+      }
       
       tf2::Quaternion q;
       q.setRPY(0, 0, yaw);
@@ -652,6 +658,14 @@ geometry_msgs::msg::PoseStamped PlaceObject::computePlacePose(
       pose_map.pose.orientation.y = q.y();
       pose_map.pose.orientation.z = q.z();
       pose_map.pose.orientation.w = q.w();
+
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "PlaceObject: Applied %.2fm forward place bias, adjusted map pose: (%.3f, %.3f, %.3f)",
+        PLACE_FORWARD_BIAS_METERS,
+        pose_map.pose.position.x,
+        pose_map.pose.position.y,
+        pose_map.pose.position.z);
     } catch (const tf2::TransformException & ex) {
       RCLCPP_WARN(node_->get_logger(), "Could not get robot pose for orientation: %s", ex.what());
     }
