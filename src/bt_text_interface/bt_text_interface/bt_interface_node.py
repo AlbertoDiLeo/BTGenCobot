@@ -1,4 +1,6 @@
 """ROS2 Action Server for BehaviorTree Generation and Execution"""
+import json
+import math
 import re
 import time
 import uuid
@@ -60,6 +62,16 @@ NAV_STATUS_NAMES = {
 }
 
 
+def _escape_xml_attr(value) -> str:
+    return (
+        str(value)
+        .replace('&', '&amp;')
+        .replace('"', '&quot;')
+        .replace('<', '&lt;')
+        .replace('>', '&gt;')
+    )
+
+
 class BTInterfaceNode(Node):
     """ROS2 Action Server for generating BehaviorTrees from natural language and executing them via Nav2"""
 
@@ -105,6 +117,11 @@ class BTInterfaceNode(Node):
             depth=1
         )
         self._bt_xml_publisher = self.create_publisher(String, '/generated_behavior_tree', qos_latched)
+        self._bt_execution_feedback_publisher = self.create_publisher(
+            String,
+            '/bt_execution_feedback',
+            10,
+        )
         self._cmd_vel_nav_publisher = self.create_publisher(Twist, '/cmd_vel_nav', 10)
         self._cmd_vel_smoothed_publisher = self.create_publisher(Twist, '/cmd_vel_smoothed', 10)
         self._cmd_vel_publisher = self.create_publisher(Twist, '/cmd_vel', 10)
@@ -246,9 +263,6 @@ class BTInterfaceNode(Node):
             return None
         return self._normalize_room_label(match.group(1))
 
-    def _pose_to_bt_string(self, pose: dict) -> str:
-        return f'0;{pose["frame_id"]};{pose["x"]};{pose["y"]};0;0;0;0;1'
-
     def _build_curated_room_bt(self, room_name: str, command: str) -> str:
         route = CURATED_ROOM_ROUTES[room_name]
         include_wait = 'wait for further instructions' in command.lower()
@@ -278,7 +292,265 @@ class BTInterfaceNode(Node):
         ]
         return '\n'.join(xml_lines)
 
+    def _parse_semantic_navigation_command(self, command: str) -> Optional[dict]:
+        try:
+            envelope = json.loads(command)
+        except json.JSONDecodeError:
+            return None
+
+        if not isinstance(envelope, dict):
+            return None
+        if envelope.get('type') != 'semantic_navigation':
+            return None
+
+        semantic = envelope.get('semantic_navigation')
+        if not isinstance(semantic, dict):
+            raise ValueError('semantic_navigation envelope missing semantic_navigation object')
+
+        waypoints = semantic.get('waypoints')
+        if not isinstance(waypoints, list) or len(waypoints) == 0:
+            raise ValueError('semantic_navigation request must include at least one waypoint')
+
+        for index, waypoint in enumerate(waypoints, start=1):
+            if not isinstance(waypoint, dict):
+                raise ValueError(f'Waypoint {index} is not an object')
+            if 'x' not in waypoint or 'y' not in waypoint:
+                raise ValueError(f'Waypoint {index} must include x and y')
+
+        return {
+            'command': envelope.get('command') or f"go to {semantic.get('destination_label', 'destination')}",
+            'semantic_navigation': semantic,
+        }
+
+    def _semantic_waypoint_to_pose(self, waypoint: dict) -> dict:
+        return {
+            'x': float(waypoint['x']),
+            'y': float(waypoint['y']),
+            'frame_id': waypoint.get('frame_id') or waypoint.get('frameId') or 'map',
+            'yaw_rad': waypoint.get('yaw_rad', waypoint.get('yawRad')),
+        }
+
+    def _pose_to_bt_string(self, pose: dict) -> str:
+        yaw_rad = float(pose.get('yaw_rad') or 0.0)
+        # Nav2 pose strings use quaternion x;y;z;w after position. For planar
+        # room navigation only yaw is relevant.
+        half_yaw = yaw_rad / 2.0
+        z = math.sin(half_yaw)
+        w = math.cos(half_yaw)
+        return f'0;{pose["frame_id"]};{pose["x"]};{pose["y"]};0;0;0;{z};{w}'
+
+    def _build_semantic_navigation_rewritten_input(self, semantic: dict) -> str:
+        destination_label = semantic.get('destination_label') or semantic.get('destination_id') or 'destination'
+        start_node_id = semantic.get('start_node_id', 'unknown')
+        target_node_id = semantic.get('target_node_id', 'unknown')
+        topological_path = semantic.get('topological_path') or []
+        waypoints = [
+            self._semantic_waypoint_to_pose(waypoint)
+            for waypoint in semantic.get('waypoints', [])
+        ]
+
+        waypoint_lines = []
+        for index, waypoint in enumerate(waypoints, start=1):
+            pose_value = self._pose_to_bt_string(waypoint)
+            waypoint_lines.append(
+                f'- waypoint_{index}: goal="{pose_value}" path="{{path_{index}}}"'
+            )
+
+        return '\n'.join([
+            'Structure: Sequence',
+            'Actions: ComputePathToPose, FollowPath',
+            f'Task: Navigate to the resolved semantic destination "{destination_label}".',
+            f'Route source: {semantic.get("planner", "external-route-planner")}.',
+            f'Topological route: {" -> ".join(topological_path)}.',
+            f'Start node: {start_node_id}.',
+            f'Target node: {target_node_id}.',
+            'Use only the metric waypoints below. Do not invent rooms, goals, coordinates, object actions, recovery actions, or additional navigation targets.',
+            'For each waypoint, generate a ComputePathToPose action immediately followed by a FollowPath action using the same path key.',
+            *waypoint_lines,
+        ])
+
+    def _build_semantic_navigation_instruction(self) -> str:
+        return (
+            'Generate a BehaviorTree XML for a resolved room-navigation task. '
+            'The route has already been computed by an external topological route planner. '
+            'Use only ComputePathToPose and FollowPath actions. '
+            'For every provided waypoint, first compute a path to the exact goal string, '
+            'then follow that path. Copy each goal attribute exactly as provided, '
+            'including the leading timestamp/frame fields such as 0;map;x;y;0;0;0;z;w. '
+            'Do not shorten, normalize, or reinterpret goal strings. '
+            'Do not add DetectObject, PickObject, PlaceObject, '
+            'Spin, BackUp, Wait, conditions, extra goals, or recovery branches. '
+            'Output only valid XML with BTCPP_format="4".'
+        )
+
+    def _semantic_navigation_expected_goals(self, semantic: dict) -> list[str]:
+        return [
+            self._pose_to_bt_string(self._semantic_waypoint_to_pose(waypoint))
+            for waypoint in semantic.get('waypoints', [])
+        ]
+
+    def _get_bt_node_id(self, element: ET.Element) -> str:
+        return element.tag if element.tag != 'Action' else element.get('ID', element.tag)
+
+    def _validate_semantic_navigation_bt(self, bt_xml: str, semantic: dict) -> tuple[bool, Optional[str]]:
+        try:
+            root = ET.fromstring(bt_xml)
+        except ET.ParseError as e:
+            return False, f'Invalid XML: {e}'
+
+        expected_goals = self._semantic_navigation_expected_goals(semantic)
+        compute_nodes = [
+            element
+            for element in root.iter()
+            if self._get_bt_node_id(element) == 'ComputePathToPose'
+        ]
+        follow_nodes = [
+            element
+            for element in root.iter()
+            if self._get_bt_node_id(element) == 'FollowPath'
+        ]
+
+        if len(compute_nodes) != len(expected_goals):
+            return False, (
+                f'Expected {len(expected_goals)} ComputePathToPose node(s), '
+                f'got {len(compute_nodes)}'
+            )
+        if len(follow_nodes) < len(expected_goals):
+            return False, (
+                f'Expected at least {len(expected_goals)} FollowPath node(s), '
+                f'got {len(follow_nodes)}'
+            )
+
+        actual_goals = [node.get('goal') for node in compute_nodes]
+        for index, (actual_goal, expected_goal) in enumerate(zip(actual_goals, expected_goals), start=1):
+            if actual_goal != expected_goal:
+                return False, (
+                    f'Waypoint {index} goal mismatch. '
+                    f'Expected "{expected_goal}", got "{actual_goal}"'
+                )
+
+        return True, None
+
+    def _build_resolved_route_navigation_bt(self, semantic: dict) -> str:
+        destination_label = _escape_xml_attr(
+            semantic.get('destination_label') or semantic.get('destination_id') or 'Destination'
+        )
+        waypoints = [
+            self._semantic_waypoint_to_pose(waypoint)
+            for waypoint in semantic.get('waypoints', [])
+        ]
+
+        sequence_lines = [f'      <Sequence name="Navigate to {destination_label}">']
+        multiple_waypoints = len(waypoints) > 1
+        for index, pose in enumerate(waypoints, start=1):
+            pose_value = _escape_xml_attr(self._pose_to_bt_string(pose))
+            path_key = f'{{path_{index}}}'
+            plan_name = (
+                f'Plan path to {destination_label} waypoint {index}'
+                if multiple_waypoints
+                else f'Plan path to {destination_label}'
+            )
+            move_name = (
+                f'Move to {destination_label} waypoint {index}'
+                if multiple_waypoints
+                else f'Move to {destination_label}'
+            )
+            sequence_lines.append(
+                f'        <ComputePathToPose name="{plan_name}" goal="{pose_value}" path="{path_key}" planner_id="GridBased"/>'
+            )
+            sequence_lines.append(
+                f'        <FollowPath name="{move_name}" path="{path_key}" controller_id="FollowPath"/>'
+            )
+        sequence_lines.append('      </Sequence>')
+
+        xml_lines = [
+            '<root BTCPP_format="4" main_tree_to_execute="MainTree">',
+            '  <BehaviorTree ID="MainTree">',
+            *sequence_lines,
+            '  </BehaviorTree>',
+            '</root>',
+        ]
+        return '\n'.join(xml_lines)
+
+    async def generate_bt_from_semantic_navigation(self, payload: dict) -> tuple[Optional[str], Optional[str]]:
+        semantic = payload['semantic_navigation']
+        command = payload['command']
+        rewritten_input = self._build_semantic_navigation_rewritten_input(semantic)
+        custom_instruction = self._build_semantic_navigation_instruction()
+
+        self.get_logger().info(
+            'Generating semantic navigation BT through inference server: '
+            f'{semantic.get("start_node_id")} -> {semantic.get("target_node_id")} '
+            f'({len(semantic.get("waypoints", []))} waypoint(s))'
+        )
+
+        try:
+            response = requests.post(
+                f'{self.inference_url}/generate_bt',
+                json={
+                    'command': command,
+                    'max_tokens': 1024,
+                    'temperature': 0.1,
+                    'prompt_format': 'alpaca',
+                    'use_query_rewriting': False,
+                    'rewritten_input': rewritten_input,
+                    'custom_instruction': custom_instruction,
+                },
+                timeout=self.generation_timeout
+            )
+            if response.status_code == 200:
+                data = response.json()
+                bt_xml = data.get('bt_xml')
+                if data.get('success', False) and bt_xml:
+                    is_valid_semantic_bt, validation_error = self._validate_semantic_navigation_bt(bt_xml, semantic)
+                    if not is_valid_semantic_bt:
+                        self.get_logger().warn(
+                            'Semantic navigation LLM output is not executable; '
+                            'compiling resolved route in backend: '
+                            f'{validation_error}'
+                        )
+                        return self._build_resolved_route_navigation_bt(semantic), None
+
+                    self.get_logger().info('Semantic navigation BT generated by inference server')
+                    return bt_xml, None
+
+                self.get_logger().warn(
+                    f'Semantic navigation LLM generation failed; '
+                    f'compiling resolved route in backend: '
+                    f'{data.get("error", "Unknown error")}'
+                )
+            else:
+                self.get_logger().warn(
+                    f'Semantic navigation inference server HTTP {response.status_code}, '
+                    'compiling resolved route in backend'
+                )
+        except requests.Timeout:
+            self.get_logger().warn(
+                'Semantic navigation inference server timeout; '
+                'compiling resolved route in backend'
+            )
+        except requests.ConnectionError:
+            self.get_logger().warn(
+                'Semantic navigation inference server unavailable; '
+                'compiling resolved route in backend'
+            )
+        except Exception as e:
+            self.get_logger().warn(
+                f'Semantic navigation generation error; '
+                f'compiling resolved route in backend: {e}'
+            )
+
+        return self._build_resolved_route_navigation_bt(semantic), None
+
     async def generate_bt_from_command(self, command: str) -> tuple[Optional[str], Optional[str]]:
+        try:
+            semantic_payload = self._parse_semantic_navigation_command(command)
+        except ValueError as e:
+            return None, str(e)
+
+        if semantic_payload:
+            return await self.generate_bt_from_semantic_navigation(semantic_payload)
+
         curated_room = self._extract_curated_room(command)
         if curated_room in CURATED_ROOM_ROUTES:
             self.get_logger().info(f'Using curated room navigation BT for: {curated_room}')
@@ -404,6 +676,15 @@ class BTInterfaceNode(Node):
         feedback = GenerateAndExecuteBT.Feedback()
         feedback.status, feedback.progress, feedback.current_step = status, progress, step
         goal_handle.publish_feedback(feedback)
+
+        msg = String()
+        msg.data = json.dumps({
+            'status': status,
+            'progress': progress,
+            'current_step': step,
+            'timestamp_ms': int(time.time() * 1000),
+        })
+        self._bt_execution_feedback_publisher.publish(msg)
 
     def command_topic_callback(self, msg: String):
         command = msg.data.strip()
