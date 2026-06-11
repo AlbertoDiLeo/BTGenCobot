@@ -5,6 +5,7 @@
 #include <cmath>
 #include "cv_bridge/cv_bridge.hpp"
 #include "tf2/LinearMath/Quaternion.h"
+#include "tf2/utils.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 using namespace std::chrono_literals;
@@ -341,12 +342,11 @@ BT::NodeStatus PlaceObject::onRunning()
         geometry_msgs::msg::Twist stop_msg;
         cmd_vel_pub_->publish(stop_msg);
 
-        RCLCPP_WARN(
+        RCLCPP_ERROR(
           node_->get_logger(),
-          "PlaceObject: Approach timeout after %.1fs, proceeding with place anyway",
+          "PlaceObject: Approach timeout after %.1fs; refusing to place while misaligned",
           elapsed);
-        state_ = PlaceState::PLACING;
-        return BT::NodeStatus::RUNNING;
+        return BT::NodeStatus::FAILURE;
       }
 
       // Get current robot position in map frame
@@ -359,10 +359,8 @@ BT::NodeStatus PlaceObject::onRunning()
           *node_->get_clock(),
           1000,
           "PlaceObject: Could not get robot position: %s", ex.what());
-        // Keep moving if we can't get position
-        geometry_msgs::msg::Twist cmd_vel;
-        cmd_vel.linear.x = APPROACH_VELOCITY;
-        cmd_vel_pub_->publish(cmd_vel);
+        geometry_msgs::msg::Twist stop_msg;
+        cmd_vel_pub_->publish(stop_msg);
         return BT::NodeStatus::RUNNING;
       }
 
@@ -370,16 +368,25 @@ BT::NodeStatus PlaceObject::onRunning()
       double dx = place_pose_.pose.position.x - robot_transform.transform.translation.x;
       double dy = place_pose_.pose.position.y - robot_transform.transform.translation.y;
       double distance_to_target = std::sqrt(dx * dx + dy * dy);
+      double target_yaw = std::atan2(dy, dx);
+      double robot_yaw = tf2::getYaw(robot_transform.transform.rotation);
+      double heading_error = std::atan2(
+        std::sin(target_yaw - robot_yaw),
+        std::cos(target_yaw - robot_yaw));
 
       RCLCPP_INFO_THROTTLE(
         node_->get_logger(),
         *node_->get_clock(),
         500,
-        "PlaceObject: Approaching... distance to target: %.3fm, target: %.2fm",
-        distance_to_target, MIN_APPROACH_DISTANCE);
+        "PlaceObject: Approaching... distance: %.3fm, target: %.2fm, heading error: %.1fdeg",
+        distance_to_target,
+        MIN_APPROACH_DISTANCE,
+        heading_error * 180.0 / M_PI);
 
-      // Check if we're close enough
-      if (distance_to_target <= MIN_APPROACH_DISTANCE) {
+      if (
+        distance_to_target <= MIN_APPROACH_DISTANCE &&
+        std::abs(heading_error) <= APPROACH_HEADING_TOLERANCE)
+      {
         geometry_msgs::msg::Twist stop_msg;
         cmd_vel_pub_->publish(stop_msg);
 
@@ -392,9 +399,18 @@ BT::NodeStatus PlaceObject::onRunning()
         return BT::NodeStatus::RUNNING;
       }
 
-      // Still need to move closer
+      // Center the target before advancing so the manipulator reaches it head-on.
       geometry_msgs::msg::Twist cmd_vel;
-      cmd_vel.linear.x = APPROACH_VELOCITY;
+      cmd_vel.angular.z = std::clamp(
+        APPROACH_ANGULAR_GAIN * heading_error,
+        -MAX_APPROACH_ANGULAR_VELOCITY,
+        MAX_APPROACH_ANGULAR_VELOCITY);
+      if (
+        distance_to_target > MIN_APPROACH_DISTANCE &&
+        std::abs(heading_error) <= APPROACH_HEADING_TOLERANCE)
+      {
+        cmd_vel.linear.x = APPROACH_VELOCITY;
+      }
       cmd_vel_pub_->publish(cmd_vel);
 
       return BT::NodeStatus::RUNNING;

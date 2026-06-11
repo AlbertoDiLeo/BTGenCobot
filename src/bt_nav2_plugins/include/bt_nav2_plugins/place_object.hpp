@@ -137,6 +137,9 @@ private:
   double retreat_start_x_;
   double retreat_start_y_;
   static constexpr double APPROACH_VELOCITY = 0.08;  // m/s - slow for safety
+  static constexpr double APPROACH_ANGULAR_GAIN = 1.4;
+  static constexpr double MAX_APPROACH_ANGULAR_VELOCITY = 0.35;  // rad/s
+  static constexpr double APPROACH_HEADING_TOLERANCE = 0.07;  // rad, about 4 degrees
   static constexpr double RETREAT_VELOCITY = -0.08;  // m/s - back away after place
   static constexpr double RETREAT_DISTANCE = 0.25;  // Less than pick: object has been released
   static constexpr double MAX_RETREAT_TIME = 5.0;  // seconds

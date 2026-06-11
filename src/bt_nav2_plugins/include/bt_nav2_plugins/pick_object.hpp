@@ -138,15 +138,18 @@ private:
   bool retreat_started_;
   double retreat_start_x_;
   double retreat_start_y_;
-  static constexpr double APPROACH_VELOCITY = 0.08;  // m/s - slow for safety
+  static constexpr double APPROACH_VELOCITY = 0.06;  // m/s - controlled final approach
+  static constexpr double APPROACH_ANGULAR_GAIN = 1.4;
+  static constexpr double MAX_APPROACH_ANGULAR_VELOCITY = 0.35;  // rad/s
+  static constexpr double APPROACH_HEADING_TOLERANCE = 0.07;  // rad, about 4 degrees
   static constexpr double RETREAT_VELOCITY = -0.08;  // m/s - match approach speed in reverse
   static constexpr double RETREAT_DISTANCE = 0.30;  // Back away from table before reporting success
   static constexpr double MAX_RETREAT_TIME = 6.0;  // seconds
   // Distance from robot base_link to object for arm to reach
   // Arm reaches ~0.286m from link1, which is at -0.092m from base_link
   // So arm can reach ~0.19m in front of base_link
-  // Stop a bit further back to avoid collision and give arm room to maneuver
-  static constexpr double MIN_APPROACH_DISTANCE = 0.22;  // Stop 22cm from object
+  // Keep the mobile base clear of the support while remaining within arm reach.
+  static constexpr double MIN_APPROACH_DISTANCE = 0.28;  // Keep the base clear of the table
 };
 
 }  // namespace bt_nav2_plugins

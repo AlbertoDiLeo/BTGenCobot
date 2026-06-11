@@ -5,6 +5,7 @@
 #include <cmath>
 #include "cv_bridge/cv_bridge.hpp"
 #include "tf2/LinearMath/Quaternion.h"
+#include "tf2/utils.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 using namespace std::chrono_literals;
@@ -386,16 +387,26 @@ BT::NodeStatus PickObject::onRunning()
       double dx = object_pose_.pose.position.x - robot_transform.transform.translation.x;
       double dy = object_pose_.pose.position.y - robot_transform.transform.translation.y;
       double distance_to_object = std::sqrt(dx * dx + dy * dy);
+      double target_yaw = std::atan2(dy, dx);
+      double robot_yaw = tf2::getYaw(robot_transform.transform.rotation);
+      double heading_error = std::atan2(
+        std::sin(target_yaw - robot_yaw),
+        std::cos(target_yaw - robot_yaw));
 
       RCLCPP_INFO_THROTTLE(
         node_->get_logger(),
         *node_->get_clock(),
         500,
-        "PickObject: Approaching... distance to object: %.3fm, target: %.2fm",
-        distance_to_object, MIN_APPROACH_DISTANCE);
+        "PickObject: Approaching... distance: %.3fm, target: %.2fm, heading error: %.1fdeg",
+        distance_to_object,
+        MIN_APPROACH_DISTANCE,
+        heading_error * 180.0 / M_PI);
 
-      // Check if we're close enough
-      if (distance_to_object <= MIN_APPROACH_DISTANCE) {
+      // Start manipulation only when both distance and heading are suitable.
+      if (
+        distance_to_object <= MIN_APPROACH_DISTANCE &&
+        std::abs(heading_error) <= APPROACH_HEADING_TOLERANCE)
+      {
         geometry_msgs::msg::Twist stop_msg;
         cmd_vel_pub_->publish(stop_msg);
 
@@ -408,9 +419,19 @@ BT::NodeStatus PickObject::onRunning()
         return BT::NodeStatus::RUNNING;
       }
 
-      // Still need to move closer
+      // Keep the object centered before moving forward. Nav2 may finish within its
+      // yaw tolerance, which is not precise enough for a close-range grasp.
       geometry_msgs::msg::Twist cmd_vel;
-      cmd_vel.linear.x = APPROACH_VELOCITY;
+      cmd_vel.angular.z = std::clamp(
+        APPROACH_ANGULAR_GAIN * heading_error,
+        -MAX_APPROACH_ANGULAR_VELOCITY,
+        MAX_APPROACH_ANGULAR_VELOCITY);
+      if (
+        distance_to_object > MIN_APPROACH_DISTANCE &&
+        std::abs(heading_error) <= APPROACH_HEADING_TOLERANCE)
+      {
+        cmd_vel.linear.x = APPROACH_VELOCITY;
+      }
       cmd_vel_pub_->publish(cmd_vel);
 
       return BT::NodeStatus::RUNNING;
