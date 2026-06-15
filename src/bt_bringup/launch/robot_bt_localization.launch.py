@@ -150,14 +150,20 @@ def generate_launch_description():
         ]
     )
 
-    # Launch Nav2
-    nav2_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(pkg_bt_bringup, 'launch', 'nav2_bringup.launch.py')
-        ),
-        launch_arguments={
-            'use_sim_time': use_sim_time
-        }.items()
+    # Configure Nav2 only after map_server and AMCL have established the
+    # map -> odom -> base_footprint transform chain.
+    nav2_launch = TimerAction(
+        period=12.0,
+        actions=[
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(pkg_bt_bringup, 'launch', 'nav2_bringup.launch.py')
+                ),
+                launch_arguments={
+                    'use_sim_time': use_sim_time
+                }.items()
+            )
+        ]
     )
 
     # Launch BT Text Interface Node (Action Server for BT generation)
