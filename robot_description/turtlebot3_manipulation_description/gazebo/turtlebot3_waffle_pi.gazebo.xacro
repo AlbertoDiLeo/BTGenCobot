@@ -145,7 +145,7 @@ Original: https://github.com/ROBOTIS-GIT/turtlebot3/blob/kinetic-devel/turtlebot
     </plugin>
   </gazebo>
 
-  <!-- LIDAR sensor for Gazebo Harmonic -->
+  <!-- Gazebo Harmonic publishes this rendering-based lidar through /scan. -->
   <gazebo reference="${prefix}base_scan">
     <material>Gazebo/FlatBlack</material>
     <sensor name="lidar" type="gpu_lidar">
@@ -157,8 +157,8 @@ Original: https://github.com/ROBOTIS-GIT/turtlebot3/blob/kinetic-devel/turtlebot
           <horizontal>
             <samples>360</samples>
             <resolution>1</resolution>
-            <min_angle>0.0</min_angle>
-            <max_angle>6.28319</max_angle>
+            <min_angle>-3.14159</min_angle>
+            <max_angle>3.14159</max_angle>
           </horizontal>
         </scan>
         <range>
