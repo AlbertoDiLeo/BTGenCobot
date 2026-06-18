@@ -42,7 +42,7 @@ Preliminary mapping phase:
 
 ```bash
 ros2 launch bt_bringup robot_bt_mapping.launch.py \
-  world:=aws_small_house \
+  environment:=aws_small_house \
   use_rviz:=true \
   headless:=false
 
@@ -94,8 +94,7 @@ Operational phase:
 
 ```bash
 ros2 launch bt_bringup robot_bt_localization.launch.py \
-  world:=aws_small_house \
-  map_file:=/workspace/maps/aws_small_house.yaml
+  environment:=aws_small_house
 ```
 
 In the operational phase `map_server` publishes `/map`, AMCL localizes the
@@ -111,6 +110,57 @@ map, repeat the Nav2 room-navigation scenarios as the final acceptance check.
 
 The Docker compose setup mounts `BTGenCobot/maps/` as `/workspace/maps/`, so
 saved maps persist across container recreation.
+
+## Environment Profiles
+
+Simulation environments are selected through the centralized profiles in
+`src/bt_bringup/config/environments.json`. A profile binds the world file,
+saved map, Gazebo spawn pose, and AMCL initial pose so incompatible values
+cannot be mixed accidentally.
+
+Available profiles:
+
+- `aws_small_house`: complete saved-map and semantic-navigation runtime;
+- `aws_hospital`: Gazebo Harmonic world prepared for preliminary mapping.
+
+The active profile is published on the transient-local topic
+`/btgen/environment`. The frontend reads this value as the launch-owned
+profile and blocks task execution if the topic is unavailable or if the active
+profile has no validated spatial data.
+
+### AWS Hospital preliminary mapping
+
+Start the dedicated mapping runtime:
+
+```bash
+ros2 launch bt_bringup robot_bt_mapping.launch.py \
+  environment:=aws_hospital \
+  use_rviz:=true \
+  headless:=false
+```
+
+In a second sourced terminal, drive the robot:
+
+```bash
+ros2 run teleop_twist_keyboard teleop_twist_keyboard
+```
+
+During exploration, verify `/scan` and `/map` in RViz and cover every
+reachable corridor, room, lateral wall, and endpoint from multiple
+orientations. Save the map only after the complete floor is represented:
+
+```bash
+ros2 run nav2_map_server map_saver_cli \
+  -f /workspace/maps/aws_hospital
+```
+
+The expected files are `/workspace/maps/aws_hospital.pgm` and
+`/workspace/maps/aws_hospital.yaml`. The Hospital localization profile must not
+be used until those files exist and the initial AMCL pose has been validated.
+
+The imported AWS Hospital world is adapted from the upstream ROS2 branch for
+Gazebo Harmonic. See `worlds/aws_hospital/README.md` for asset provenance and
+the collision compatibility note.
 
 ## Architecture
 

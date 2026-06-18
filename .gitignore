@@ -62,7 +62,7 @@ src/open_manipulator_msgs/
 src/robotis_manipulator/
 
 # External Gazebo worlds and vendored assets
-worlds/
+worlds/*
 worlds/indoor_world.sdf
 worlds/structured_house.sdf
 worlds/aws_small_house/
