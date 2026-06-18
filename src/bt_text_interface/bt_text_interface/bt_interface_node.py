@@ -622,7 +622,7 @@ class BTInterfaceNode(Node):
 
     async def execute_bt(self, bt_file_path: Path, goal_handle) -> tuple[bool, Optional[str]]:
         try:
-            if not self._nav_client.wait_for_server(timeout_sec=5.0):
+            if not self._nav_client.wait_for_server(timeout_sec=30.0):
                 return False, 'Nav2 action server not available'
 
             nav_goal = NavigateToPose.Goal()
