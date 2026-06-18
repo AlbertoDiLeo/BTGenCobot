@@ -21,6 +21,7 @@ def generate_launch_description():
         '/workspace/worlds',
         '/workspace/worlds/aws_small_house/models',
         '/workspace/worlds/aws_small_house/photos',
+        '/workspace/worlds/aws_hospital/models',
     ]
     gz_resource_path = ':'.join(resource_paths)
 
@@ -34,6 +35,7 @@ def generate_launch_description():
     world_file_arg = LaunchConfiguration('world')
     x_pose = LaunchConfiguration('x_pose')
     y_pose = LaunchConfiguration('y_pose')
+    yaw_pose = LaunchConfiguration('yaw_pose')
     headless = LaunchConfiguration('headless')
     spawn_delay = LaunchConfiguration('spawn_delay')
 
@@ -53,7 +55,7 @@ def generate_launch_description():
     declare_world_cmd = DeclareLaunchArgument(
         'world',
         default_value='default',
-        description='World selector: default | structured_house | aws_small_house | absolute path to .sdf/.world'
+        description='World selector: default | structured_house | aws_small_house | aws_hospital | absolute path'
     )
 
     declare_x_pose_cmd = DeclareLaunchArgument(
@@ -66,6 +68,12 @@ def generate_launch_description():
         'y_pose',
         default_value='0.05',
         description='Initial y position of the robot'
+    )
+
+    declare_yaw_pose_cmd = DeclareLaunchArgument(
+        'yaw_pose',
+        default_value='0.0',
+        description='Initial yaw orientation of the robot'
     )
 
     declare_headless_cmd = DeclareLaunchArgument(
@@ -84,7 +92,8 @@ def generate_launch_description():
         "'/workspace/worlds/indoor_world.sdf' if '", world_file_arg,
         "' == 'default' else '/workspace/worlds/structured_house.sdf' if '", world_file_arg,
         "' == 'structured_house' else '/workspace/worlds/aws_small_house/world.sdf' if '", world_file_arg,
-        "' == 'aws_small_house' else '", world_file_arg, "'"
+        "' == 'aws_small_house' else '/workspace/worlds/aws_hospital/world.sdf' if '", world_file_arg,
+        "' == 'aws_hospital' else '", world_file_arg, "'"
     ])
 
     # Start Gazebo Harmonic - headless or with GUI based on parameter
@@ -93,7 +102,8 @@ def generate_launch_description():
         'IGN_GAZEBO_RESOURCE_PATH': gz_resource_path,
         'GAZEBO_MODEL_PATH': ':'.join([
             '/workspace/worlds/aws_small_house/models',
-            '/workspace/worlds/aws_small_house/photos'
+            '/workspace/worlds/aws_small_house/photos',
+            '/workspace/worlds/aws_hospital/models'
         ]),
         'GZ_SIM_SYSTEM_PLUGIN_PATH': ':'.join([
             '/opt/ros/jazzy/lib',
@@ -148,6 +158,7 @@ def generate_launch_description():
                     '-topic', 'robot_description',
                     '-x', x_pose,
                     '-y', y_pose,
+                    '-Y', yaw_pose,
                     '-z', '0.5'
                 ],
                 output='screen'
@@ -315,6 +326,7 @@ def generate_launch_description():
     ld.add_action(declare_world_cmd)
     ld.add_action(declare_x_pose_cmd)
     ld.add_action(declare_y_pose_cmd)
+    ld.add_action(declare_yaw_pose_cmd)
     ld.add_action(declare_headless_cmd)
     ld.add_action(declare_spawn_delay_cmd)
 

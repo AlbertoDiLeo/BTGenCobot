@@ -1,0 +1,34 @@
+{
+  "aws_small_house": {
+    "label": "AWS Small House",
+    "world_file": "/workspace/worlds/aws_small_house/world.sdf",
+    "map_file": "/workspace/maps/aws_small_house.yaml",
+    "spawn": {
+      "x": 0.35,
+      "y": 0.05,
+      "yaw": 0.0
+    },
+    "initial_pose": {
+      "x": 0.0,
+      "y": 0.0,
+      "yaw": 0.0
+    },
+    "slam_max_laser_range": 5.0
+  },
+  "aws_hospital": {
+    "label": "AWS Hospital",
+    "world_file": "/workspace/worlds/aws_hospital/world.sdf",
+    "map_file": "/workspace/maps/aws_hospital_final.yaml",
+    "spawn": {
+      "x": 0.0,
+      "y": 7.5,
+      "yaw": 0.0
+    },
+    "initial_pose": {
+      "x": 0.0,
+      "y": 0.0,
+      "yaw": 0.0
+    },
+    "slam_max_laser_range": 9.5
+  }
+}

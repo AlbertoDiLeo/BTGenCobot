@@ -5,13 +5,47 @@ Launches Gazebo, Nav2 with pre-built map, BT Interface Node, and Foxglove Bridge
 Uses AMCL for localization instead of SLAM
 """
 
+import json
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument, TimerAction
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    OpaqueFunction,
+    SetLaunchConfiguration,
+    TimerAction,
+)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
+
+
+def resolve_environment_profile(context, profiles_file):
+    environment_id = LaunchConfiguration('environment').perform(context)
+    with open(profiles_file, encoding='utf-8') as stream:
+        profiles = json.load(stream)
+
+    profile = profiles.get(environment_id)
+    if profile is None:
+        supported = ', '.join(sorted(profiles))
+        raise RuntimeError(
+            f'Unknown environment "{environment_id}". Supported: {supported}'
+        )
+
+    spawn = profile['spawn']
+    initial_pose = profile['initial_pose']
+    return [
+        SetLaunchConfiguration('resolved_world', profile['world_file']),
+        SetLaunchConfiguration('resolved_map_file', profile['map_file']),
+        SetLaunchConfiguration('resolved_spawn_x', str(spawn['x'])),
+        SetLaunchConfiguration('resolved_spawn_y', str(spawn['y'])),
+        SetLaunchConfiguration('resolved_spawn_yaw', str(spawn['yaw'])),
+        SetLaunchConfiguration('resolved_initial_x', str(initial_pose['x'])),
+        SetLaunchConfiguration('resolved_initial_y', str(initial_pose['y'])),
+        SetLaunchConfiguration('resolved_initial_yaw', str(initial_pose['yaw'])),
+    ]
 
 
 def generate_launch_description():
@@ -21,8 +55,15 @@ def generate_launch_description():
 
     # Launch configuration variables
     use_sim_time = LaunchConfiguration('use_sim_time')
-    world = LaunchConfiguration('world')
-    map_file = LaunchConfiguration('map_file')
+    environment = LaunchConfiguration('environment')
+    resolved_world = LaunchConfiguration('resolved_world')
+    resolved_map_file = LaunchConfiguration('resolved_map_file')
+    resolved_spawn_x = LaunchConfiguration('resolved_spawn_x')
+    resolved_spawn_y = LaunchConfiguration('resolved_spawn_y')
+    resolved_spawn_yaw = LaunchConfiguration('resolved_spawn_yaw')
+    resolved_initial_x = LaunchConfiguration('resolved_initial_x')
+    resolved_initial_y = LaunchConfiguration('resolved_initial_y')
+    resolved_initial_yaw = LaunchConfiguration('resolved_initial_yaw')
     inference_server_url = LaunchConfiguration('inference_server_url')
     bt_output_dir = LaunchConfiguration('bt_output_dir')
 
@@ -33,16 +74,10 @@ def generate_launch_description():
         description='Use simulation (Gazebo) clock if true'
     )
 
-    declare_world_cmd = DeclareLaunchArgument(
-        'world',
-        default_value='default',
-        description='World selector: default | structured_house | aws_small_house | absolute path to .sdf/.world'
-    )
-
-    declare_map_file_cmd = DeclareLaunchArgument(
-        'map_file',
-        default_value='/workspace/maps/my_map.yaml',
-        description='Full path to map yaml file to use for localization'
+    declare_environment_cmd = DeclareLaunchArgument(
+        'environment',
+        default_value='aws_small_house',
+        description='Environment profile: aws_small_house | aws_hospital'
     )
 
     declare_inference_server_url_cmd = DeclareLaunchArgument(
@@ -65,8 +100,11 @@ def generate_launch_description():
         launch_arguments={
             'use_sim_time': use_sim_time,
             'use_rviz': 'true',
-            'world': world,
-            'headless': 'false'
+            'world': resolved_world,
+            'headless': 'false',
+            'x_pose': resolved_spawn_x,
+            'y_pose': resolved_spawn_y,
+            'yaw_pose': resolved_spawn_yaw,
         }.items()
     )
 
@@ -78,7 +116,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'use_sim_time': use_sim_time,
-            'yaml_filename': map_file
+            'yaml_filename': resolved_map_file
         }]
     )
 
@@ -95,10 +133,9 @@ def generate_launch_description():
         }]
     )
 
-    # Launch AMCL for localization with delay to allow TF to stabilize
-    # Wrapped in TimerAction to ensure Gazebo TF is publishing before AMCL starts
+    # Launch AMCL only after the robot has been spawned and Gazebo TF/scan are stable.
     amcl_node = TimerAction(
-        period=8.0,  # Wait for Gazebo and TF bridges to stabilize
+        period=18.0,
         actions=[
             Node(
                 package='nav2_amcl',
@@ -113,10 +150,19 @@ def generate_launch_description():
                     'scan_topic': 'scan',
                     'robot_model_type': 'nav2_amcl::DifferentialMotionModel',
                     'set_initial_pose': True,
-                    'initial_pose.x': 0.0,
-                    'initial_pose.y': 0.0,
+                    'initial_pose.x': ParameterValue(
+                        resolved_initial_x,
+                        value_type=float,
+                    ),
+                    'initial_pose.y': ParameterValue(
+                        resolved_initial_y,
+                        value_type=float,
+                    ),
                     'initial_pose.z': 0.0,
-                    'initial_pose.yaw': 0.0,
+                    'initial_pose.yaw': ParameterValue(
+                        resolved_initial_yaw,
+                        value_type=float,
+                    ),
                     # AMCL parameters
                     'min_particles': 500,
                     'max_particles': 2000,
@@ -134,7 +180,7 @@ def generate_launch_description():
 
     # Lifecycle manager for AMCL (delayed to match AMCL startup)
     amcl_lifecycle_node = TimerAction(
-        period=9.0,  # Start after AMCL has had time to initialize
+        period=20.0,
         actions=[
             Node(
                 package='nav2_lifecycle_manager',
@@ -153,7 +199,7 @@ def generate_launch_description():
     # Configure Nav2 only after map_server and AMCL have established the
     # map -> odom -> base_footprint transform chain.
     nav2_launch = TimerAction(
-        period=12.0,
+        period=24.0,
         actions=[
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
@@ -176,7 +222,7 @@ def generate_launch_description():
             'inference_server_url': inference_server_url,
             'bt_output_dir': bt_output_dir,
             'generation_timeout': 30.0,
-            'execution_timeout': 120.0
+            'execution_timeout': 300.0
         }],
         output='screen',
         emulate_tty=True
@@ -231,17 +277,37 @@ def generate_launch_description():
         output='screen'
     )
 
+    environment_publisher = Node(
+        package='bt_bringup',
+        executable='environment_publisher.py',
+        name='environment_publisher',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'environment_id': environment,
+        }],
+        output='screen',
+    )
+
     # Create launch description
     ld = LaunchDescription()
 
     # Add launch arguments
     ld.add_action(declare_use_sim_time_cmd)
-    ld.add_action(declare_world_cmd)
-    ld.add_action(declare_map_file_cmd)
+    ld.add_action(declare_environment_cmd)
     ld.add_action(declare_inference_server_url_cmd)
     ld.add_action(declare_bt_output_dir_cmd)
 
     # Add launch files
+    profiles_file = os.path.join(
+        pkg_bt_bringup,
+        'config',
+        'environments.json',
+    )
+    ld.add_action(OpaqueFunction(
+        function=resolve_environment_profile,
+        args=[profiles_file],
+    ))
+    ld.add_action(environment_publisher)
     ld.add_action(gazebo_launch)
 
     # Add Map Server and AMCL (instead of SLAM)

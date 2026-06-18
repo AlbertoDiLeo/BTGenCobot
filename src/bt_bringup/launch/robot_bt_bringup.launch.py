@@ -100,7 +100,7 @@ def generate_launch_description():
             'inference_server_url': inference_server_url,
             'bt_output_dir': bt_output_dir,
             'generation_timeout': 30.0,
-            'execution_timeout': 120.0
+            'execution_timeout': 300.0
         }],
         output='screen',
         emulate_tty=True
