@@ -32,6 +32,7 @@ async def publish_nl_command(command: str, ws_url: str = FOXGLOVE_WS_URL) -> boo
             ws_url,
             subprotocols=["foxglove.sdk.v1"],
             open_timeout=5.0,
+            close_timeout=1.0,
             max_size=None,
         ) as ws:
             # 1. Wait for serverInfo handshake

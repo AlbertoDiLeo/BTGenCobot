@@ -169,7 +169,7 @@ def generate_launch_description():
                     'update_min_d': 0.1,  # Update after 10cm movement
                     'update_min_a': 0.1,  # Update after ~6° rotation
                     'resample_interval': 1,
-                    'transform_tolerance': 1.0,  # Increased for Gazebo timing jitter
+                    'transform_tolerance': 2.0,  # Increased for slower hospital sim
                     'recovery_alpha_slow': 0.0,
                     'recovery_alpha_fast': 0.0,
                     'tf_broadcast': True,
@@ -180,7 +180,7 @@ def generate_launch_description():
 
     # Lifecycle manager for AMCL (delayed to match AMCL startup)
     amcl_lifecycle_node = TimerAction(
-        period=20.0,
+        period=23.0,
         actions=[
             Node(
                 package='nav2_lifecycle_manager',
@@ -190,7 +190,8 @@ def generate_launch_description():
                 parameters=[{
                     'use_sim_time': use_sim_time,
                     'autostart': True,
-                    'node_names': ['amcl']
+                    'node_names': ['amcl'],
+                    'bond_timeout': 20.0,
                 }]
             )
         ]

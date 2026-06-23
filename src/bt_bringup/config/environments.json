@@ -13,7 +13,9 @@
       "y": 0.0,
       "yaw": 0.0
     },
-    "slam_max_laser_range": 5.0
+    "slam_max_laser_range": 5.0,
+    "spawn_delay": 14.0,
+    "nav2_startup_delay": 24.0
   },
   "aws_hospital": {
     "label": "AWS Hospital",
@@ -29,6 +31,9 @@
       "y": 0.0,
       "yaw": 0.0
     },
-    "slam_max_laser_range": 9.5
+    "slam_max_laser_range": 9.5,
+    "spawn_delay": 14.0,
+    "nav2_startup_delay": 30.0,
+    "headless": false
   }
 }
