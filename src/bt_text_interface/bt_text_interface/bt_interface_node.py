@@ -61,7 +61,6 @@ NAV_STATUS_NAMES = {
     4: 'SUCCEEDED', 5: 'CANCELED', 6: 'ABORTED'
 }
 
-
 def _escape_xml_attr(value) -> str:
     return (
         str(value)
@@ -89,12 +88,16 @@ class BTInterfaceNode(Node):
         self.declare_parameter('generation_timeout', 30.0)
         self.declare_parameter('execution_timeout', 300.0)
         self.declare_parameter('feedback_rate', 2.0)
+        self.declare_parameter('nav_action', '/navigate_to_pose')
+        self.declare_parameter('nav_server_wait_timeout', 90.0)
 
         self.inference_url = self.get_parameter('inference_server_url').value
         self.bt_output_dir = Path(self.get_parameter('bt_output_dir').value)
         self.generation_timeout = self.get_parameter('generation_timeout').value
         self.execution_timeout = self.get_parameter('execution_timeout').value
         self.feedback_rate = self.get_parameter('feedback_rate').value
+        self.nav_action_name = self.get_parameter('nav_action').value
+        self.nav_server_wait_timeout = self.get_parameter('nav_server_wait_timeout').value
 
         self.bt_output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -137,7 +140,7 @@ class BTInterfaceNode(Node):
         )
 
         self._nav_client = ActionClient(
-            self, NavigateToPose, '/navigate_to_pose',
+            self, NavigateToPose, self.nav_action_name,
             callback_group=self.action_callback_group
         )
 
@@ -163,10 +166,14 @@ class BTInterfaceNode(Node):
     def _log_configuration(self):
         self.get_logger().info(f'BT output directory: {self.bt_output_dir}')
         self.get_logger().info(f'Inference server URL: {self.inference_url}')
+        self.get_logger().info(f'Navigation action target: {self.nav_action_name}')
         self.get_logger().info('BT Interface Node initialized')
 
     def goal_callback(self, goal_request):
         self.get_logger().info(f'Received goal request: {goal_request.command}')
+        if self.is_executing:
+            self.get_logger().warn('Already executing — rejecting concurrent goal')
+            return GoalResponse.REJECT
         return GoalResponse.ACCEPT
 
     def cancel_callback(self, goal_handle):
@@ -620,14 +627,73 @@ class BTInterfaceNode(Node):
         file_path.chmod(0o644)
         return file_path
 
-    async def execute_bt(self, bt_file_path: Path, goal_handle) -> tuple[bool, Optional[str]]:
+    def _extract_final_nav_pose_from_bt(self, bt_file_path: Path) -> Optional[dict]:
         try:
-            if not self._nav_client.wait_for_server(timeout_sec=30.0):
-                return False, 'Nav2 action server not available'
+            root = ET.parse(bt_file_path).getroot()
+        except Exception as e:
+            self.get_logger().warn(f'Unable to parse BT goal for action pose: {e}')
+            return None
+
+        compute_goals = [
+            element.get('goal')
+            for element in root.iter()
+            if self._get_bt_node_id(element) == 'ComputePathToPose'
+        ]
+        compute_goals = [goal for goal in compute_goals if goal]
+        if not compute_goals:
+            return None
+
+        final_goal = compute_goals[-1]
+        parts = final_goal.split(';')
+        if len(parts) != 9:
+            self.get_logger().warn(f'Unexpected BT goal format: {final_goal}')
+            return None
+
+        try:
+            return {
+                'frame_id': parts[1] or 'map',
+                'x': float(parts[2]),
+                'y': float(parts[3]),
+                'z': float(parts[4]),
+                'qx': float(parts[5]),
+                'qy': float(parts[6]),
+                'qz': float(parts[7]),
+                'qw': float(parts[8]),
+            }
+        except ValueError as e:
+            self.get_logger().warn(f'Invalid numeric BT goal value: {e}')
+            return None
+
+    async def execute_bt(
+        self,
+        bt_file_path: Path,
+        goal_handle,
+    ) -> tuple[bool, Optional[str]]:
+        try:
+            if not self._nav_client.wait_for_server(timeout_sec=self.nav_server_wait_timeout):
+                return False, f'Nav2 action server not available: {self.nav_action_name}'
 
             nav_goal = NavigateToPose.Goal()
             nav_goal.behavior_tree = str(bt_file_path.absolute())
             nav_goal.pose.header.frame_id = 'map'
+            # Dynamic object tasks compute their real goal inside the BT. Keep
+            # the mandatory action-level placeholder a valid planar pose.
+            nav_goal.pose.pose.orientation.w = 1.0
+            final_pose = self._extract_final_nav_pose_from_bt(bt_file_path)
+            if final_pose:
+                nav_goal.pose.header.frame_id = final_pose['frame_id']
+                nav_goal.pose.pose.position.x = final_pose['x']
+                nav_goal.pose.pose.position.y = final_pose['y']
+                nav_goal.pose.pose.position.z = final_pose['z']
+                nav_goal.pose.pose.orientation.x = final_pose['qx']
+                nav_goal.pose.pose.orientation.y = final_pose['qy']
+                nav_goal.pose.pose.orientation.z = final_pose['qz']
+                nav_goal.pose.pose.orientation.w = final_pose['qw']
+                self.get_logger().info(
+                    'Using final BT waypoint as Nav2 action goal: '
+                    f'{final_pose["frame_id"]} '
+                    f'({final_pose["x"]:.2f}, {final_pose["y"]:.2f})'
+                )
             
             send_goal_future = self._nav_client.send_goal_async(nav_goal)
             start_wait = time.time()

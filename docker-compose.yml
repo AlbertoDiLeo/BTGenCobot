@@ -30,6 +30,8 @@ services:
       - ROS_DOMAIN_ID=42
       - DISPLAY=:1
       - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - RMW_FASTRTPS_USE_SHM=0
+      - FASTDDS_BUILTIN_TRANSPORTS=UDPv4
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
     stdin_open: true
     tty: true
