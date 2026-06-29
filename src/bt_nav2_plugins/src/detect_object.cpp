@@ -31,9 +31,12 @@ DetectObject::DetectObject(
   // We spin this ourselves to ensure callbacks are processed
   sub_node_ = std::make_shared<rclcpp::Node>("detect_object_sub_node");
   
-  // Initialize TF2 using the shared node (uses Nav2's clock)
-  tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock());
-  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+  // Reuse Nav2's long-lived TF buffer. A buffer created when this BT node is
+  // instantiated has no transform history yet, while Florence-2 processes an
+  // image captured before that short-lived buffer received its first TF data.
+  if (!config.blackboard->get("tf_buffer", tf_buffer_) || !tf_buffer_) {
+    throw BT::RuntimeError("DetectObject: 'tf_buffer' not found in blackboard");
+  }
 
   RCLCPP_INFO(node_->get_logger(), "DetectObject BT node initialized");
 
@@ -363,11 +366,20 @@ BT::NodeStatus DetectObject::onRunning()
   // Use camera optical frame for pose estimation
   std::string camera_frame = "camera_rgb_optical_frame";
 
-  geometry_msgs::msg::PoseStamped target_pose = pixelToPose(
-    refined_center_x,
-    refined_center_y,
-    depth,
-    camera_frame);
+  geometry_msgs::msg::PoseStamped target_pose;
+  try {
+    target_pose = pixelToPose(
+      refined_center_x,
+      refined_center_y,
+      depth,
+      camera_frame);
+  } catch (const tf2::TransformException & ex) {
+    RCLCPP_ERROR(
+      node_->get_logger(),
+      "Cannot compute navigation approach pose in map frame: %s",
+      ex.what());
+    return BT::NodeStatus::FAILURE;
+  }
 
   RCLCPP_INFO(
     node_->get_logger(),
@@ -445,7 +457,9 @@ geometry_msgs::msg::PoseStamped DetectObject::pixelToPose(
   // Create pose in camera optical frame
   geometry_msgs::msg::PoseStamped pose_camera;
   pose_camera.header.frame_id = frame_id;
-  pose_camera.header.stamp = node_->now();
+  // Use the latest available transform to avoid extrapolation into the past
+  // when Gazebo runs below real-time and the TF buffer lags node_->now().
+  pose_camera.header.stamp = rclcpp::Time(0);
   pose_camera.pose.position.x = x;
   pose_camera.pose.position.y = y;
   pose_camera.pose.position.z = z;
@@ -468,20 +482,13 @@ geometry_msgs::msg::PoseStamped DetectObject::pixelToPose(
     double obj_y = pose_map.pose.position.y;
     
     // Get robot's current position in map frame
-    geometry_msgs::msg::TransformStamped robot_transform;
-    double robot_x = 0.0, robot_y = 0.0;
-    try {
-      robot_transform = tf_buffer_->lookupTransform("map", "base_link", tf2::TimePointZero);
-      robot_x = robot_transform.transform.translation.x;
-      robot_y = robot_transform.transform.translation.y;
-      RCLCPP_INFO(
-        node_->get_logger(),
-        "Robot position in map: (%.2f, %.2f)", robot_x, robot_y);
-    } catch (const tf2::TransformException & ex) {
-      RCLCPP_WARN(
-        node_->get_logger(),
-        "Could not get robot position, using map origin: %s", ex.what());
-    }
+    const auto robot_transform =
+      tf_buffer_->lookupTransform("map", "base_link", tf2::TimePointZero);
+    const double robot_x = robot_transform.transform.translation.x;
+    const double robot_y = robot_transform.transform.translation.y;
+    RCLCPP_INFO(
+      node_->get_logger(),
+      "Robot position in map: (%.2f, %.2f)", robot_x, robot_y);
     
     // Calculate direction vector from robot to object
     double dx = obj_x - robot_x;
@@ -538,7 +545,8 @@ geometry_msgs::msg::PoseStamped DetectObject::pixelToPose(
     RCLCPP_ERROR(
       node_->get_logger(),
       "TF transform failed: %s", ex.what());
-    return pose_camera;
+    // Never return camera-frame coordinates as if they were already in map.
+    throw;
   }
 }
 

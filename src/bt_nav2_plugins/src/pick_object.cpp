@@ -39,9 +39,11 @@ PickObject::PickObject(
   // Create a separate node for service calls and subscriptions
   service_node_ = std::make_shared<rclcpp::Node>("pick_object_service_node");
 
-  // Initialize TF2
-  tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock());
-  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+  // Reuse Nav2's long-lived TF buffer so image poses can be transformed even
+  // after the vision service has spent several seconds processing them.
+  if (!config.blackboard->get("tf_buffer", tf_buffer_) || !tf_buffer_) {
+    throw BT::RuntimeError("PickObject: 'tf_buffer' not found in blackboard");
+  }
 
   // Create service clients
   detect_client_ = service_node_->create_client<btgencobot_interfaces::srv::DetectObject>(
@@ -320,8 +322,16 @@ BT::NodeStatus PickObject::onRunning()
           object_width_, object_height_);
       }
 
-      // Compute object pose
-      object_pose_ = computeObjectPose(refined_center_x, refined_center_y, depth, "camera_rgb_optical_frame");
+      // Compute object pose — may throw if TF is unavailable
+      try {
+        object_pose_ = computeObjectPose(refined_center_x, refined_center_y, depth, "camera_rgb_optical_frame");
+      } catch (const tf2::TransformException & ex) {
+        RCLCPP_ERROR(
+          node_->get_logger(),
+          "PickObject: Cannot compute object pose in map frame: %s",
+          ex.what());
+        return BT::NodeStatus::FAILURE;
+      }
 
       // Save depth for approach calculation
       detected_depth_ = depth;
@@ -645,10 +655,12 @@ geometry_msgs::msg::PoseStamped PickObject::computeObjectPose(
   double y = (center_y - cy_) * depth_value / fy_;
   double z = depth_value;
 
-  // Create pose in camera optical frame
+  // Create pose in camera optical frame.
+  // Use Time(0) (= latest available transform) to avoid extrapolation errors
+  // at low simulation RTF where node_->now() can lag behind the TF buffer.
   geometry_msgs::msg::PoseStamped pose_camera;
   pose_camera.header.frame_id = frame_id;
-  pose_camera.header.stamp = node_->now();
+  pose_camera.header.stamp = rclcpp::Time(0);
   pose_camera.pose.position.x = x;
   pose_camera.pose.position.y = y;
   pose_camera.pose.position.z = z;
@@ -695,7 +707,9 @@ geometry_msgs::msg::PoseStamped PickObject::computeObjectPose(
 
   } catch (const tf2::TransformException & ex) {
     RCLCPP_ERROR(node_->get_logger(), "TF transform failed: %s", ex.what());
-    return pose_camera;
+    // Do NOT return pose_camera — its coordinates are in camera frame, not map frame.
+    // Propagate the failure so the state machine can return FAILURE cleanly.
+    throw;
   }
 }
 

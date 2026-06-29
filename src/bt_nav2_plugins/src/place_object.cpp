@@ -37,9 +37,11 @@ PlaceObject::PlaceObject(
   // Create a separate node for service calls and subscriptions
   service_node_ = std::make_shared<rclcpp::Node>("place_object_service_node");
 
-  // Initialize TF2
-  tf_buffer_ = std::make_shared<tf2_ros::Buffer>(node_->get_clock());
-  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+  // Reuse Nav2's long-lived TF buffer so delayed vision results retain access
+  // to the transform history associated with their source images.
+  if (!config.blackboard->get("tf_buffer", tf_buffer_) || !tf_buffer_) {
+    throw BT::RuntimeError("PlaceObject: 'tf_buffer' not found in blackboard");
+  }
 
   // Create service clients
   detect_client_ = service_node_->create_client<btgencobot_interfaces::srv::DetectObject>(
@@ -624,7 +626,9 @@ geometry_msgs::msg::PoseStamped PlaceObject::computePlacePose(
   // Create pose in camera optical frame
   geometry_msgs::msg::PoseStamped pose_camera;
   pose_camera.header.frame_id = frame_id;
-  pose_camera.header.stamp = node_->now();
+  // Use the latest available transform to avoid extrapolation errors when
+  // simulation time is behind the TF buffer.
+  pose_camera.header.stamp = rclcpp::Time(0);
   pose_camera.pose.position.x = x;
   pose_camera.pose.position.y = y;
   pose_camera.pose.position.z = z;
@@ -690,7 +694,8 @@ geometry_msgs::msg::PoseStamped PlaceObject::computePlacePose(
 
   } catch (const tf2::TransformException & ex) {
     RCLCPP_ERROR(node_->get_logger(), "TF transform failed: %s", ex.what());
-    return pose_camera;
+    // Do NOT return pose_camera — its coordinates are in camera frame, not map frame.
+    throw;
   }
 }
 
