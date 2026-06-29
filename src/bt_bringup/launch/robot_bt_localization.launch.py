@@ -66,6 +66,7 @@ def generate_launch_description():
     resolved_initial_yaw = LaunchConfiguration('resolved_initial_yaw')
     inference_server_url = LaunchConfiguration('inference_server_url')
     bt_output_dir = LaunchConfiguration('bt_output_dir')
+    vision_startup_delay = LaunchConfiguration('vision_startup_delay')
 
     # Declare launch arguments
     declare_use_sim_time_cmd = DeclareLaunchArgument(
@@ -90,6 +91,12 @@ def generate_launch_description():
         'bt_output_dir',
         default_value='/workspace/generated_bts',
         description='Directory to save generated BehaviorTrees'
+    )
+
+    declare_vision_startup_delay_cmd = DeclareLaunchArgument(
+        'vision_startup_delay',
+        default_value='70.0',
+        description='Delay Florence-2 startup until navigation is active'
     )
 
     # Launch Gazebo with robot (use_rviz=true to start RViz, headless=false for GUI)
@@ -169,7 +176,7 @@ def generate_launch_description():
                     'update_min_d': 0.1,  # Update after 10cm movement
                     'update_min_a': 0.1,  # Update after ~6° rotation
                     'resample_interval': 1,
-                    'transform_tolerance': 2.0,  # Increased for slower hospital sim
+                    'transform_tolerance': 2.0,  # Tolerates slower heavy Gazebo scenes such as aws_hospital
                     'recovery_alpha_slow': 0.0,
                     'recovery_alpha_fast': 0.0,
                     'tf_broadcast': True,
@@ -180,7 +187,7 @@ def generate_launch_description():
 
     # Lifecycle manager for AMCL (delayed to match AMCL startup)
     amcl_lifecycle_node = TimerAction(
-        period=23.0,
+        period=20.0,
         actions=[
             Node(
                 package='nav2_lifecycle_manager',
@@ -190,8 +197,7 @@ def generate_launch_description():
                 parameters=[{
                     'use_sim_time': use_sim_time,
                     'autostart': True,
-                    'node_names': ['amcl'],
-                    'bond_timeout': 20.0,
+                    'node_names': ['amcl']
                 }]
             )
         ]
@@ -231,18 +237,28 @@ def generate_launch_description():
 
     # Launch Florence-2 Object Detection Service
     # Uses Florence-2 for text-prompted object detection
-    florence2_service = Node(
-        package='vision_services',
-        executable='florence2_service',
-        name='florence2_service',
-        parameters=[{
-            'use_sim_time': use_sim_time,
-            'use_mock': False,  # Use real models
-            'florence2_model': 'microsoft/Florence-2-base',
-            'device': 'auto',
-            'publish_debug_images': True,
-        }],
-        output='screen'
+    florence2_service = TimerAction(
+        period=vision_startup_delay,
+        actions=[
+            Node(
+                package='vision_services',
+                executable='florence2_service',
+                name='florence2_service',
+                parameters=[{
+                    'use_sim_time': use_sim_time,
+                    'use_mock': False,
+                    'florence2_model': 'microsoft/Florence-2-base',
+                    'device': 'cpu',
+                    'publish_debug_images': True,
+                }],
+                output='screen',
+                additional_env={
+                    'OMP_NUM_THREADS': '2',
+                    'MKL_NUM_THREADS': '2',
+                    'TOKENIZERS_PARALLELISM': 'false',
+                },
+            )
+        ],
     )
 
     # Launch Manipulator Control Service (pick/place using ikpy)
@@ -297,6 +313,7 @@ def generate_launch_description():
     ld.add_action(declare_environment_cmd)
     ld.add_action(declare_inference_server_url_cmd)
     ld.add_action(declare_bt_output_dir_cmd)
+    ld.add_action(declare_vision_startup_delay_cmd)
 
     # Add launch files
     profiles_file = os.path.join(
