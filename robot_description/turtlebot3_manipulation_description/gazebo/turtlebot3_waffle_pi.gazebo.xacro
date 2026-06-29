@@ -208,9 +208,8 @@ Original: https://github.com/ROBOTIS-GIT/turtlebot3/blob/kinetic-devel/turtlebot
         </noise>
         <lens>
           <intrinsics>
-            <!-- fx, fy, cx, cy -->
-            <fx>554.3</fx>
-            <fy>554.3</fy>
+            <fx>554.3827128226441</fx>
+            <fy>554.3827128226441</fy>
             <cx>320.5</cx>
             <cy>240.5</cy>
           </intrinsics>

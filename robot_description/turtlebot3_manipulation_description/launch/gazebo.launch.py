@@ -48,7 +48,7 @@ def generate_launch_description():
 
     declare_use_rviz_cmd = DeclareLaunchArgument(
         'use_rviz',
-        default_value='false',
+        default_value='true',
         description='Whether to start RViz'
     )
 
@@ -108,13 +108,13 @@ def generate_launch_description():
         'GZ_SIM_SYSTEM_PLUGIN_PATH': ':'.join([
             '/opt/ros/jazzy/lib',
             '/opt/ros/jazzy/opt/gz_sim_vendor/lib'
-        ])
+        ]),
     }
     
     # Run headless (no GUI) with -s (server only) flag
     start_gazebo_headless_cmd = ExecuteProcess(
         condition=IfCondition(headless),
-        cmd=['gz', 'sim', '-r', '-s', '-v', '4', resolved_world_file],
+        cmd=['gz', 'sim', '-r', '-s', '-v', '2', resolved_world_file],
         output='screen',
         additional_env=env_vars
     )
@@ -122,7 +122,7 @@ def generate_launch_description():
     # Run with GUI (no -s flag)
     start_gazebo_gui_cmd = ExecuteProcess(
         condition=UnlessCondition(headless),
-        cmd=['gz', 'sim', '-r', '-v', '4', resolved_world_file],
+        cmd=['gz', 'sim', '-r', '-v', '2', resolved_world_file],
         output='screen',
         additional_env=env_vars
     )
