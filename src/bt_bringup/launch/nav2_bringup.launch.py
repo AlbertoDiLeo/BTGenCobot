@@ -30,15 +30,14 @@ def generate_launch_description():
         description='Full path to the Nav2 parameters file'
     )
 
-    # Nav2 bringup launch - includes all Nav2 nodes (disable docking)
+    # Nav2 bringup launch - local copy with docking_server removed
     nav2_bringup_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(pkg_nav2_bringup, 'launch', 'navigation_launch.py')
+            os.path.join(pkg_bt_bringup, 'launch', 'nav2_navigation_launch.py')
         ),
         launch_arguments={
             'use_sim_time': use_sim_time,
             'params_file': params_file,
-            'use_docking': 'false',  # Use lowercase boolean
             'autostart': 'true'
         }.items()
     )
