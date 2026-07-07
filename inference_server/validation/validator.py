@@ -26,6 +26,16 @@ ACTION_NODES = [
 
 ALL_VALID_NODES = CONTROL_NODES + DECORATOR_NODES + CONDITION_NODES + ACTION_NODES
 
+SUPPORTED_COMMAND_PATTERNS = (
+    "pick up", "pick", "grab", "grasp", "take",
+    "place", "put", "set down", "deposit",
+    "navigate", "go to", "move to", "travel to", "head to", "return to",
+    "move forward", "go forward", "drive",
+    "spin", "rotate", "turn left", "turn right",
+    "detect", "find", "look for", "search",
+    "wait", "back up", "back away",
+)
+
 
 def get_all_node_types():
     """Get list of all valid BT node types"""
@@ -35,6 +45,18 @@ def get_all_node_types():
 class BTValidationError(Exception):
     """Custom exception for BT validation errors"""
     pass
+
+
+def validate_supported_command(command: str) -> Tuple[bool, Optional[str]]:
+    """Check that a generic request contains at least one supported robot intent."""
+    normalized = " ".join(command.strip().lower().split())
+    if not normalized:
+        return False, "Command is empty"
+
+    if any(pattern in normalized for pattern in SUPPORTED_COMMAND_PATTERNS):
+        return True, None
+
+    return False, "Command does not describe a supported robot task"
 
 
 def validate_bt_xml(xml_string: str, strict: bool = False) -> Tuple[bool, Optional[str]]:
@@ -304,6 +326,10 @@ def validate_command_semantics(xml_string: str, command: str) -> Tuple[bool, lis
     """
     issues = []
     cmd = command.lower()
+
+    command_supported, command_error = validate_supported_command(command)
+    if not command_supported:
+        return False, [command_error or "Unsupported robot command"]
 
     is_place_only = (
         any(token in cmd for token in ["place", "put", "set down", "deposit"]) and

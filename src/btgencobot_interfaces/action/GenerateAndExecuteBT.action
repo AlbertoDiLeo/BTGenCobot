@@ -7,6 +7,6 @@ string bt_xml_path          # Path to the generated BT XML file
 string error_message        # Error description if failed (empty if success)
 ---
 # Feedback: Progress updates during execution
-string status               # Current phase: "generating" | "validating" | "executing" | "completed"
+string status               # Current phase: "generating" | "validating" | "executing" | "completed" | "failed"
 float32 progress            # Progress from 0.0 to 1.0
 string current_step         # Description of current step

@@ -175,7 +175,7 @@ class SemanticNavigationRequest(BaseModel):
 
 
 class ExecuteCommandRequest(BaseModel):
-    """Request model for /execute — generate BT and send command to robot"""
+    """Request model for /execute — forward a task request to ROS2."""
     command: str = Field("", description="Natural language command")
     temperature: float = Field(0.1, description="Sampling temperature", ge=0.0, le=2.0)
     foxglove_ws_url: str = Field("ws://localhost:8765", description="Foxglove Bridge WebSocket URL")
@@ -187,11 +187,9 @@ class ExecuteCommandRequest(BaseModel):
 
 class ExecuteCommandResponse(BaseModel):
     """Response model for /execute"""
-    success: bool = Field(..., description="Whether BT generation succeeded")
-    bt_xml: Optional[str] = Field(None, description="Generated BehaviorTree XML")
-    generation_time_ms: int = Field(..., description="Generation time in milliseconds")
+    success: bool = Field(..., description="Whether the request was forwarded to ROS2")
     ros_command_sent: bool = Field(..., description="Whether the command was forwarded to ROS2")
-    error: Optional[str] = Field(None, description="Error message if generation failed")
+    error: Optional[str] = Field(None, description="Error message if forwarding failed")
     request_type: str = Field("natural_language", description="Request type handled by /execute")
 
 
@@ -229,7 +227,7 @@ async def root():
         "status": "running" if state.model_loaded else "initializing",
         "endpoints": {
             "POST /generate_bt": "Generate BehaviorTree XML from natural language (no robot execution)",
-            "POST /execute": "Generate BT and send command to robot via ROS2",
+            "POST /execute": "Forward a task request to the ROS2 execution pipeline",
             "GET /health": "Check server health",
             "POST /emergency_stop": "Emergency stop"
         }
@@ -334,10 +332,10 @@ async def generate_bt(request: GenerateBTRequest):
 @app.post("/execute", response_model=ExecuteCommandResponse)
 async def execute_command(request: ExecuteCommandRequest):
     """
-    Generate BehaviorTree from natural language and send the command to the robot.
+    Forward a task request to the robot-side generation and execution pipeline.
 
     This is the main endpoint for the frontend:
-    1. For normal commands, generates a BT preview and forwards the command to ROS2.
+    1. For normal commands, forwards the natural-language command.
     2. For semantic navigation, forwards the resolved route as structured JSON.
 
     The robot-side bt_interface_node owns final BT generation/execution and publishes
@@ -350,97 +348,44 @@ async def execute_command(request: ExecuteCommandRequest):
 
     try:
         if request.semantic_navigation is not None:
-            from core.ros_bridge import publish_nl_command
-
             ros_command = build_semantic_navigation_ros_command(request)
             semantic = request.semantic_navigation
+            request_type = "semantic_navigation"
             logger.info(
                 "Forwarding semantic navigation request to ROS2: "
                 f"{semantic.start_node_id} -> {semantic.target_node_id} "
                 f"({len(semantic.waypoints)} waypoint(s), planner={semantic.planner})"
             )
-
-            ros_sent = await publish_nl_command(ros_command, ws_url=request.foxglove_ws_url)
-            if ros_sent:
-                state.successful_requests += 1
-                logger.info("Semantic navigation request forwarded to ROS2 successfully")
-            else:
-                state.failed_requests += 1
-                logger.warning("Could not forward semantic navigation request to ROS2")
-
-            logger.info("=" * 80)
-
-            return ExecuteCommandResponse(
-                success=ros_sent,
-                bt_xml=None,
-                generation_time_ms=0,
-                ros_command_sent=ros_sent,
-                error=None if ros_sent else "Could not forward semantic navigation request to ROS2",
-                request_type="semantic_navigation",
-            )
-
-        if not request.command.strip():
-            state.failed_requests += 1
-            return ExecuteCommandResponse(
-                success=False,
-                bt_xml=None,
-                generation_time_ms=0,
-                ros_command_sent=False,
-                error="Missing command for natural-language execution request",
-                request_type="natural_language",
-            )
-
-        if not state.model_loaded or state.generator is None:
-            state.failed_requests += 1
-            raise HTTPException(status_code=503, detail="Model not loaded.")
-
-        start_time = time.time()
-
-        # 1. Rewrite the command
-        from core.query_rewriter import rewrite_command
-        rewritten_input = rewrite_command(request.command)
-        if rewritten_input:
-            logger.info(f"Rewritten input:\n{rewritten_input}")
-
-        # 2. Generate BT XML (preview for the frontend)
-        result = state.generator.generate_bt(
-            command=request.command,
-            max_tokens=1024,
-            temperature=request.temperature,
-            prompt_format="alpaca",
-            rewritten_input=rewritten_input,
-        )
-
-        if not result["success"]:
-            state.failed_requests += 1
-            return ExecuteCommandResponse(
-                success=False,
-                bt_xml=None,
-                generation_time_ms=result.get("generation_time_ms", 0),
-                ros_command_sent=False,
-                error=result.get("error"),
-                request_type="natural_language",
-            )
-
-        state.successful_requests += 1
-        logger.info(f"BT generated in {result['generation_time_ms']}ms")
-
-        # 3. Publish command to ROS2 via Foxglove WebSocket
-        from core.ros_bridge import publish_nl_command
-        ros_sent = await publish_nl_command(request.command, ws_url=request.foxglove_ws_url)
-        if ros_sent:
-            logger.info("Command forwarded to ROS2 successfully")
         else:
-            logger.warning("Could not forward command to ROS2 (Foxglove Bridge unreachable?)")
+            ros_command = request.command.strip()
+            request_type = "natural_language"
+            from validation.validator import validate_supported_command
+            command_supported, command_error = validate_supported_command(ros_command)
+            if not command_supported:
+                state.failed_requests += 1
+                return ExecuteCommandResponse(
+                    success=False,
+                    ros_command_sent=False,
+                    error=command_error,
+                    request_type=request_type,
+                )
+
+        from core.ros_bridge import publish_nl_command
+        ros_sent = await publish_nl_command(ros_command, ws_url=request.foxglove_ws_url)
+        if ros_sent:
+            state.successful_requests += 1
+            logger.info(f"{request_type} request forwarded to ROS2 successfully")
+        else:
+            state.failed_requests += 1
+            logger.warning(f"Could not forward {request_type} request to ROS2")
 
         logger.info("=" * 80)
 
         return ExecuteCommandResponse(
-            success=True,
-            bt_xml=result["bt_xml"],
-            generation_time_ms=result["generation_time_ms"],
+            success=ros_sent,
             ros_command_sent=ros_sent,
-            request_type="natural_language",
+            error=None if ros_sent else "Could not forward request to ROS2",
+            request_type=request_type,
         )
 
     except Exception as e:

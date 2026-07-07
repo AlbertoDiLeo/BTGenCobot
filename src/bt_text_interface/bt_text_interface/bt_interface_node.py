@@ -207,6 +207,8 @@ class BTInterfaceNode(Node):
             if bt_xml is None:
                 result.error_message = f'BT generation failed: {error}'
                 self.get_logger().error(result.error_message)
+                self.publish_feedback(goal_handle, 'failed', 1.0, result.error_message)
+                goal_handle.abort()
                 return result
 
             self.publish_feedback(goal_handle, 'validating', 0.3, 'Validating generated BT...')
@@ -214,6 +216,8 @@ class BTInterfaceNode(Node):
             if not is_valid:
                 result.error_message = f'BT validation failed: {val_error}'
                 self.get_logger().error(result.error_message)
+                self.publish_feedback(goal_handle, 'failed', 1.0, result.error_message)
+                goal_handle.abort()
                 return result
 
             self.publish_feedback(goal_handle, 'validating', 0.4, 'Writing BT to file...')
@@ -239,6 +243,8 @@ class BTInterfaceNode(Node):
             if not execution_success:
                 result.error_message = f'BT execution failed: {exec_error}'
                 self.get_logger().error(result.error_message)
+                self.publish_feedback(goal_handle, 'failed', 1.0, result.error_message)
+                goal_handle.abort()
                 return result
 
             self.get_logger().info('BT execution completed successfully')
@@ -250,6 +256,7 @@ class BTInterfaceNode(Node):
         except Exception as e:
             result.error_message = f'Unexpected error: {str(e)}'
             self.get_logger().error(result.error_message)
+            self.publish_feedback(goal_handle, 'failed', 1.0, result.error_message)
             goal_handle.abort()
 
         finally:
