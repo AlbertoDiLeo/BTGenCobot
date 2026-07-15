@@ -1,136 +1,155 @@
 # BTGenCobot
 
-Natural language to BehaviorTree XML generation for ROS2 mobile manipulators.
+Natural-language to BehaviorTree.CPP XML generation and execution for ROS 2
+mobile manipulators.
 
-## Overview
+The project integrates:
 
-BTGenCobot takes commands like "pick up the red cup and place it on the table" and generates valid BehaviorTree.CPP XML for execution on Nav2. Uses a fine-tuned Llama 3.2-1B model with grammar-constrained decoding to ensure syntactically correct output.
+- a FastAPI inference server for Behavior Tree generation;
+- ROS 2 nodes for Behavior Tree validation and execution;
+- Nav2 navigation on saved metric maps;
+- Gazebo simulation with TurtleBot3 Waffle Pi and OpenManipulator-X;
+- environment profiles for AWS Small House and AWS Hospital.
 
 ## Requirements
 
-- Docker & Docker Compose
-- NVIDIA GPU (optional, for faster inference)
+- Docker and Docker Compose
+- NVIDIA GPU optional, but recommended for faster model inference
+- AWS world assets available under `worlds/` when running the simulations
 
-## Usage
+The Docker compose setup mounts the local project folders into the container:
+
+- `src/` -> `/workspace/src`
+- `robot_description/` -> `/workspace/robot_description`
+- `worlds/` -> `/workspace/worlds`
+- `maps/` -> `/workspace/maps`
+
+Saved maps and world files are therefore loaded from the local repository copy.
+
+## Quick Start
+
+Start the container:
 
 ```bash
-docker-compose up --build
+cd BTGenCobot
+docker compose up -d --build
+```
 
-# In the container
+Open a shell inside the container:
+
+```bash
+docker exec -it btgencobot bash
+```
+
+Build the ROS 2 workspace:
+
+```bash
+source /opt/ros/jazzy/setup.bash
 colcon build --symlink-install
 source install/setup.bash
-
-# Start simulation
-ros2 launch turtlebot3_manipulation_description gazebo.launch.py
-
-# Start Nav2
-ros2 launch bt_bringup nav2_bringup.launch.py
-
-# Start inference server (on host or in container)
-cd inference_server && uv run serve
-
-# Send commands
-ros2 topic pub /btgen_nl_command std_msgs/String "data: 'pick up the red cup'"
 ```
 
-## Saved-Map Navigation Runtime
-
-For the frontend thesis workflow, room-based navigation should use a saved
-metric map, not online SLAM as the operational assumption.
-
-Preliminary mapping phase:
+Start the inference server in a separate terminal, either on the host or in the
+container:
 
 ```bash
-ros2 launch bt_bringup robot_bt_mapping.launch.py \
-  environment:=aws_small_house \
-  use_rviz:=true \
-  headless:=false
-
-ros2 run nav2_map_server map_saver_cli -f /workspace/maps/aws_small_house
+cd inference_server
+uv run serve
 ```
 
-`robot_bt_mapping.launch.py` deliberately excludes Nav2 task execution,
-inference, Florence-2 and manipulation services. This keeps scan acquisition
-and SLAM more responsive during the dedicated mapping session. The historical
-`robot_bt_frontend.launch.py` remains available for compatibility, but it is
-not the preferred map-construction runtime.
-
-### Laser validation before mapping
-
-The simulated lidar publishes `/scan` in `base_scan` with a declared range of
-`0.12-10.0 m`. SLAM Toolbox intentionally uses observations up to `5.0 m`.
-The Gazebo GPU lidar is configured with an angular interval of `-pi..+pi`.
-This is required for a real 360-degree scan in Gazebo Harmonic; the previous
-`0..2*pi` interval was capped by the renderer. The validated message contains
-360 samples spanning approximately `6.283 rad`.
-Before producing a final saved map, validate the sensor in RViz:
-
-1. launch the preliminary mapping runtime with RViz;
-2. keep the RViz fixed frame on `map` and enable the `/scan` LaserScan display;
-3. place the robot near walls at known distances and use the RViz Measure tool;
-4. compare measured wall distances with the visible scan endpoints;
-5. verify that scans remain aligned with walls while the robot moves and turns;
-6. only then explore the complete environment and save the final map.
-
-Useful runtime checks:
-
-```bash
-ros2 topic info /scan --verbose
-ros2 topic echo /scan sensor_msgs/msg/LaserScan --once --field range_min
-ros2 topic echo /scan sensor_msgs/msg/LaserScan --once --field range_max
-ros2 topic hz /scan
-ros2 run tf2_ros tf2_echo base_footprint base_scan
-```
-
-Do not increase the SLAM range solely to fill unknown areas. Missing walls must
-first be investigated as an exploration, occlusion, TF, or scale problem.
-
-The current saved AWS Small House map was produced with the dedicated mapping
-launch and repeated observations from the living room, kitchen, western
-passage and bedroom. It contains `375 x 224` cells at `0.05 m/cell`, with
-origin `[-9.736, -5.601, 0]`.
-
-Operational phase:
+Start the full saved-map runtime for AWS Small House:
 
 ```bash
 ros2 launch bt_bringup robot_bt_localization.launch.py \
   environment:=aws_small_house
 ```
 
-In the operational phase `map_server` publishes `/map`, AMCL localizes the
-robot on that saved map, and Nav2 receives goals in the `map` frame. The
-frontend semantic map and topology map should be aligned to this saved metric
-map.
+Start the full saved-map runtime for AWS Hospital:
 
-`robot_bt_localization.launch.py` starts Nav2 only after map server and AMCL
-have established the `map -> odom -> base_footprint` transform chain. The
-configured Living room, Kitchen and Bedroom topology goals have been checked
-against the occupancy grid and fall in free cells. After replacing a saved
-map, repeat the Nav2 room-navigation scenarios as the final acceptance check.
+```bash
+ros2 launch bt_bringup robot_bt_localization.launch.py \
+  environment:=aws_hospital
+```
 
-The Docker compose setup mounts `BTGenCobot/maps/` as `/workspace/maps/`, so
-saved maps persist across container recreation.
+The launch starts Gazebo, map server, AMCL, Nav2, `bt_interface_node`,
+perception/manipulation services, Foxglove Bridge, and the environment
+publisher used by the frontend.
 
 ## Environment Profiles
 
-Simulation environments are selected through the centralized profiles in
-`src/bt_bringup/config/environments.json`. A profile binds the world file,
-saved map, Gazebo spawn pose, and AMCL initial pose so incompatible values
-cannot be mixed accidentally.
+Simulation environments are selected through centralized profiles in:
+
+```text
+src/bt_bringup/config/environments.json
+```
+
+Each profile binds:
+
+- the Gazebo world file;
+- the saved metric map;
+- the robot spawn pose;
+- the AMCL initial pose;
+- startup delays for heavier environments.
 
 Available profiles:
 
-- `aws_small_house`: complete saved-map and semantic-navigation runtime;
-- `aws_hospital`: Gazebo Harmonic world prepared for preliminary mapping.
+| Profile | Purpose |
+| --- | --- |
+| `aws_small_house` | Saved-map runtime for the AWS Small House environment |
+| `aws_hospital` | Saved-map runtime for the AWS Hospital environment |
 
-The active profile is published on the transient-local topic
-`/btgen/environment`. The frontend reads this value as the launch-owned
-profile and blocks task execution if the topic is unavailable or if the active
-profile has no validated spatial data.
+The active profile is published on:
 
-### AWS Hospital preliminary mapping
+```text
+/btgen/environment
+```
 
-Start the dedicated mapping runtime:
+The frontend uses this topic to know which environment is active and to load
+the matching semantic/topological data.
+
+## Saved Maps
+
+The repository contains the saved metric maps used by Nav2:
+
+```text
+maps/aws_small_house.yaml
+maps/aws_small_house.pgm
+maps/aws_hospital_final.yaml
+maps/aws_hospital_final.pgm
+```
+
+The Docker compose file mounts `maps/` as `/workspace/maps`, so maps persist
+across container recreation.
+
+Runtime behavior:
+
+- `map_server` publishes `/map`;
+- AMCL estimates the robot pose on the saved map;
+- Nav2 receives goals in the `map` frame;
+- the frontend visualizes the metric map, robot pose, goal, and planned path.
+
+## Mapping Runtime
+
+Use the mapping launch only when a new saved map must be produced. It starts
+Gazebo and SLAM, but deliberately avoids the full task-execution pipeline.
+
+AWS Small House mapping:
+
+```bash
+ros2 launch bt_bringup robot_bt_mapping.launch.py \
+  environment:=aws_small_house \
+  use_rviz:=true \
+  headless:=false
+```
+
+Save the map:
+
+```bash
+ros2 run nav2_map_server map_saver_cli \
+  -f /workspace/maps/aws_small_house
+```
+
+AWS Hospital mapping:
 
 ```bash
 ros2 launch bt_bringup robot_bt_mapping.launch.py \
@@ -139,89 +158,94 @@ ros2 launch bt_bringup robot_bt_mapping.launch.py \
   headless:=false
 ```
 
-In a second sourced terminal, drive the robot:
+Drive the robot from a second sourced terminal:
 
 ```bash
 ros2 run teleop_twist_keyboard teleop_twist_keyboard
 ```
 
-During exploration, verify `/scan` and `/map` in RViz and cover every
-reachable corridor, room, lateral wall, and endpoint from multiple
-orientations. Save the map only after the complete floor is represented:
+Save the map after covering corridors, rooms, side walls, and endpoints from
+multiple orientations:
 
 ```bash
 ros2 run nav2_map_server map_saver_cli \
   -f /workspace/maps/aws_hospital
 ```
 
-The expected files are `/workspace/maps/aws_hospital.pgm` and
-`/workspace/maps/aws_hospital.yaml`. The Hospital localization profile must not
-be used until those files exist and the initial AMCL pose has been validated.
-
-The imported AWS Hospital world is adapted from the upstream ROS2 branch for
-Gazebo Harmonic. See `worlds/aws_hospital/README.md` for asset provenance and
-the collision compatibility note.
 
 ## Architecture
 
-```
-Natural Language Command
-         │
-         ▼
-┌─────────────────────────┐
-│   Inference Server      │
-│   (FastAPI + Llama 3.2) │
-│   + EBNF Grammar CFG    │
-└───────────┬─────────────┘
-            │
-            ▼
-      BT XML Output
-            │
-            ▼
-┌─────────────────────────┐
-│  bt_text_interface      │
-│  (ROS2 Action Server)   │
-└───────────┬─────────────┘
-            │
-            ▼
-┌─────────────────────────┐
-│  Nav2 bt_navigator      │
-│  + Custom BT Plugins    │
-└───────────┬─────────────┘
-            │
-            ▼
-      Robot Execution
+```text
+Natural-language command
+          |
+          v
+Inference server
+FastAPI + Llama 3.2 + grammar-constrained generation
+          |
+          v
+Behavior Tree XML
+          |
+          v
+bt_interface_node
+ROS 2 action lifecycle, validation, saving, execution orchestration
+          |
+          v
+Nav2 + BehaviorTree.CPP
+Navigation and Behavior Tree execution
+          |
+          v
+Gazebo robot execution
+TurtleBot3 Waffle Pi + OpenManipulator-X
 ```
 
 ## Project Structure
 
-```
+```text
 BTGenCobot/
-├── inference_server/           # LLM inference (FastAPI)
+├── inference_server/           # LLM inference server
 │   ├── api/                    # REST endpoints
-│   ├── core/                   # Model loading, generation
-│   ├── validation/             # XML validation, post-processing
-│   └── prompts/                # System prompts
+│   ├── core/                   # Model loading and generation
+│   ├── validation/             # XML validation and post-processing
+│   └── prompts/                # Prompt templates
 │
-├── src/
-│   ├── bt_text_interface/      # ROS2 action server for BT generation
-│   ├── bt_nav2_plugins/        # Custom Nav2 BT nodes (DetectObject, Pick, Place, Spin)
-│   ├── bt_bringup/             # Launch files and Nav2 config
-│   ├── manipulator_control/    # Arm IK and control service
-│   ├── vision_services/        # Florence-2 object detection
-│   └── btgencobot_interfaces/  # Custom ROS2 messages/services
+├── maps/                       # Saved metric maps for Nav2
+├── worlds/                     # Gazebo world assets
+├── robot_description/          # TurtleBot3 + OpenManipulator-X URDF
 │
-└── robot_description/          # TurtleBot3 + OpenManipulator-X URDF
+└── src/
+    ├── bt_bringup/             # Launch files, Nav2 config, environment profiles
+    ├── bt_text_interface/      # ROS 2 node/action for BT generation and execution
+    ├── bt_nav2_plugins/        # Custom BT nodes
+    ├── manipulator_control/    # Manipulator service
+    ├── vision_services/        # Object detection service
+    └── btgencobot_interfaces/  # Custom ROS 2 messages/actions
 ```
 
 ## Custom BT Nodes
 
 | Node | Description |
-|------|-------------|
-| `DetectObject` | Open-vocabulary object detection via Florence-2 |
+| --- | --- |
+| `DetectObject` | Open-vocabulary object detection |
+| `ComputePathToPose` | Nav2 path computation toward a pose |
+| `FollowPath` | Nav2 path following |
 | `PickObject` | Approach and grasp detected object |
 | `PlaceObject` | Place held object at detected location |
-| `SpinLeft/SpinRight` | Rotate in place |
+| `SpinLeft` / `SpinRight` | Rotate the base in place |
+
+## Frontend Integration
+
+The companion frontend connects to this backend through:
+
+- HTTP requests to the inference server for command submission;
+- Foxglove Bridge on port `8765` for ROS 2 topic exchange.
+
+The frontend expects:
+
+- `/btgen/environment` to identify the active profile;
+- `/map`, `/amcl_pose`, `/odom`, and planning topics for map visualization;
+- `/camera` for the robot camera stream;
+- `/generated_behavior_tree`, `/bt_execution_feedback`, and
+  `/behavior_tree_log` for Behavior Tree supervision.
 
 ## License
 
